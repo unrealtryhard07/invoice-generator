@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Invoice Studio · Nayef Bashar Trading</title>
+  <link rel="icon" href="assets/logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=Source+Serif+4:wght@400;600;700&family=Tajawal:wght@400;500;700&display=swap">
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/invoice.css">
+  <style id="page-rule"></style>
+</head>
+<body data-view="edit">
+  <header class="topbar">
+    <div class="brand">
+      <img src="assets/logo.png" alt="" class="brand-mark" width="52" height="36">
+      <div class="brand-text">
+        <span class="brand-name">Invoice Studio</span>
+        <span class="brand-doc"><b id="doc-number">—</b> · <span id="doc-customer">—</span></span>
+      </div>
+    </div>
+    <div class="doc-total" aria-live="polite">
+      <span class="doc-total-label">Amount due</span>
+      <strong id="doc-total">—</strong>
+      <span id="save-state" class="save-state" data-state="saved">Saved</span>
+    </div>
+    <nav class="actions" aria-label="Invoice actions">
+      <button type="button" class="tb-btn" data-cmd="new">New</button>
+      <button type="button" class="tb-btn" data-cmd="duplicate">Duplicate</button>
+      <button type="button" class="tb-btn" data-cmd="library">Library</button>
+      <button type="button" class="tb-btn" data-cmd="save" title="Save (⌘S)">Save</button>
+      <button type="button" class="tb-btn tb-btn--gold" data-cmd="print" title="Print or save as PDF (⌘P)">Print / PDF</button>
+    </nav>
+  </header>
+
+  <div class="view-switch" role="group" aria-label="Switch view">
+    <button type="button" data-view="edit" aria-pressed="true">Edit</button>
+    <button type="button" data-view="preview" aria-pressed="false">Preview</button>
+  </div>
+
+  <main class="workspace">
+    <aside class="editor" id="editor" aria-label="Invoice editor"></aside>
+    <section class="stage" aria-label="Invoice preview">
+      <div class="stage-tools">
+        <span class="stage-hint">Live preview · prints exactly as shown</span>
+        <div class="zoom" role="group" aria-label="Zoom">
+          <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
+          <button type="button" id="zoom-fit" class="zoom-label"><span id="zoom-label">Fit</span></button>
+          <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
+        </div>
+      </div>
+      <div class="stage-scroll" id="stage-scroll">
+        <div class="stage-zoom" id="zoom"><div id="preview"></div></div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="library" class="library" aria-labelledby="lib-title">
+    <header class="lib-head">
+      <h2 id="lib-title">Invoice library</h2>
+      <input type="search" id="lib-search" placeholder="Search number, customer, status…" aria-label="Search invoices">
+      <form method="dialog"><button class="btn ghost" aria-label="Close library">Close</button></form>
+    </header>
+    <ul id="lib-list" class="lib-list"></ul>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <input type="file" id="import-file" accept="application/json,.json" hidden>
+
+  <script src="js/calc.js"></script>
+  <script src="js/words.js"></script>
+  <script src="js/defaults.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/render.js"></script>
+  <script src="js/editor.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
