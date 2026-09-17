@@ -47,7 +47,7 @@
     const tax = round((subtotal - discount) * percent(t.taxRate) / 100, d);
     const charges = (t.charges || []).map((c) => ({ label: c.label, amount: round(c.amount, d) }));
     const total = round(subtotal - discount + lineTax + tax + sum(charges, (c) => c.amount), d);
-    const paid = round(t.paid, d);
+    const paid = round(sum(invoice.payments || [], (p) => toNum(p.amount)) + toNum(t.paid), d);
     return { lines, subtotal, discount, lineTax, tax, charges, total, paid, balance: round(total - paid, d) };
   }
 
@@ -75,5 +75,18 @@
     return format.replace(/YYYY|MMMM|MMM|MM|DD|D/g, (tok) => tokens[tok]);
   }
 
-  return { toNum, round, lineAmounts, computeTotals, formatNumber, formatDate };
+  // Internal margin: revenue is net of discounts, excluding tax and pass-through charges.
+  function profit(invoice) {
+    const d = toNum(invoice.currency.decimals);
+    const t = computeTotals(invoice);
+    const revenue = round(t.subtotal - t.discount, d);
+    const cost = round(sum(invoice.items, (i) => toNum(i.qty) * toNum(i.cost)), d);
+    return {
+      revenue, cost, profit: round(revenue - cost, d),
+      margin: revenue ? round(((revenue - cost) / revenue) * 100, 1) : 0,
+      hasCost: invoice.items.some((i) => toNum(i.cost) > 0),
+    };
+  }
+
+  return { toNum, round, lineAmounts, computeTotals, profit, formatNumber, formatDate };
 });

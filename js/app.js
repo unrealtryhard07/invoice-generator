@@ -1,20 +1,22 @@
-/* App shell: state ownership, commands, library, zoom, print. */
+/* App shell: hash routing, autosave, commands, printing, and wiring of editor, canvas and views. */
 (function (NB) {
   'use strict';
 
-  const { store, defaults, render, editor, calc } = NB;
+  const { store, defaults, render, editor, calc, ledger, ui, views, documents, blobs } = NB;
   const $ = (sel) => document.querySelector(sel);
-  const SHEET_WIDTH_PX = { A4: 793.7, Letter: 816 };
-  const CONFIRM_WINDOW_MS = 4000;
-  const DRAFT_DEBOUNCE_MS = 400;
+  const AUTOSAVE_MS = 450;
+  const MAX_UPLOAD_BYTES = 1.5 * 1024 * 1024;
 
   let state = null;
   let settings = null;
   let prefs = null;
-  let dirty = false;
+  let saveTimer = null;
   let previewQueued = false;
-  let draftTimer = null;
-  let pendingConfirm = null;
+  let cache = null;
+  let invoiceCanvas = null;
+  let statementCanvas = null;
+
+  const today = () => defaults.today();
 
   /* ---------- state ---------- */
   function setIn(obj, keys, value) {
@@ -26,118 +28,162 @@
     return copy;
   }
 
-  function normalize(inv) {
-    const merged = defaults.mergeBrand(inv);
-    return {
-      ...merged,
-      id: inv.id || defaults.uid(),
-      number: inv.number ?? '',
-      status: inv.status || 'draft',
-      customer: { name: '', address: '', contacts: [], ...(inv.customer || {}) },
-      items: Array.isArray(inv.items) ? inv.items : [],
-    };
-  }
-
-  function set(path, value, structural = false) {
-    state = setIn(state, path.split('.'), value);
-    dirty = true;
-    afterChange(structural);
-  }
-
-  function replaceState(next, isDirty = false) {
-    state = normalize(next);
-    dirty = isDirty;
-    afterChange(true);
-  }
-
-  function afterChange(structural) {
-    if (structural) editor.render();
-    schedulePreview();
-    clearTimeout(draftTimer);
-    draftTimer = setTimeout(() => guard(() => store.saveDraft(state)), DRAFT_DEBOUNCE_MS);
-  }
-
+  const listInvoices = () => {
+    cache = cache || store.listInvoices().map(defaults.migrate);
+    return cache;
+  };
+  const ledgerInvoices = () => ledger.prepare(listInvoices());
+  const invalidate = () => { cache = null; };
+  const creditNotesFor = (id) => listInvoices().filter((inv) => inv.creditFor === id && inv.status !== 'cancelled');
+  // The open document with any linked credit notes applied (for status and balances only — never saved).
+  const prepared = (inv) => ledger.prepare([inv, ...listInvoices().filter((x) => x.id !== inv.id)])[0];
+  const LINK_KEYS = ['supersededBy', 'supersededByNumber', 'convertedFrom', 'convertedFromNumber', 'creditFor', 'creditForNumber'];
   const hasContent = (inv) => Boolean(inv.customer.name || inv.items.some((i) => i.desc || calc.toNum(i.price)));
-
-  /* ---------- feedback ---------- */
-  function toast(message, tone = 'ok') {
-    const el = $('#toast');
-    el.textContent = message;
-    el.dataset.tone = tone;
-    el.classList.remove('is-shown');
-    void el.offsetWidth;
-    el.classList.add('is-shown');
-  }
 
   function guard(fn) {
     try {
       return fn();
     } catch (err) {
-      toast(err instanceof store.StorageError ? err.message : `Something went wrong: ${err.message}`, 'error');
+      ui.toast(err instanceof store.StorageError ? err.message : `Something went wrong: ${err.message}`, 'error');
       return undefined;
     }
   }
 
-  function confirmTwice(key, message) {
-    const now = Date.now();
-    if (pendingConfirm && pendingConfirm.key === key && now - pendingConfirm.at < CONFIRM_WINDOW_MS) {
-      pendingConfirm = null;
-      return true;
-    }
-    pendingConfirm = { key, at: now };
-    toast(message, 'warn');
-    return false;
+  function set(path, value, structural = false) {
+    state = setIn(state, path.split('.'), value);
+    afterChange(structural);
   }
 
-  /* ---------- preview ---------- */
-  function schedulePreview() {
-    if (previewQueued) return;
-    previewQueued = true;
-    requestAnimationFrame(() => {
-      previewQueued = false;
-      $('#preview').innerHTML = render.invoice(state);
-      updatePageRule();
-      updateChrome();
-      if (!prefs.zoom) applyZoom();
+  function update(fn, structural = false) {
+    state = fn(state);
+    afterChange(structural);
+  }
+
+  function afterChange(structural) {
+    if (structural) editor.render();
+    schedulePreview();
+    updateEditorChrome('Editing…');
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(persist, AUTOSAVE_MS);
+  }
+
+  function persist(force = false) {
+    clearTimeout(saveTimer);
+    if (!state || !(force || hasContent(state) || store.getInvoice(state.id))) return;
+    guard(() => {
+      state = store.saveInvoice(state);
+      invalidate();
+      updateEditorChrome('Saved');
+      updateBadges();
     });
   }
 
-  function updatePageRule() {
-    const margin = Math.min(Math.max(calc.toNum(state.theme.margin), 0), 30);
-    const paper = state.theme.paper === 'Letter' ? { size: 'letter', h: 279.4 } : { size: 'A4', h: 297 };
+  /* ---------- preview & chrome ---------- */
+  function updatePageRule(theme) {
+    const margin = Math.min(Math.max(calc.toNum(theme.margin), 0), 30);
+    const paper = theme.paper === 'Letter' ? { size: 'letter', h: 279.4 } : { size: 'A4', h: 297 };
     $('#page-rule').textContent = `@page { size: ${paper.size}; margin: ${margin}mm; }
-      @media print { .sheet { width: auto !important; min-height: ${paper.h - margin * 2 - 0.5}mm !important; padding: 0 !important; } }`;
+      @media print { .sheet { width: auto !important; min-height: ${paper.h - margin * 2 - 0.5}mm !important; padding: 0 !important; --pofs: ${margin}mm; } }`;
   }
 
-  function updateChrome() {
-    const totals = calc.computeTotals(state);
-    $('#doc-number').textContent = state.number || 'Unnumbered';
-    $('#doc-customer').textContent = state.customer.name || 'No customer yet';
-    $('#doc-total').textContent = `${calc.formatNumber(totals.balance, calc.toNum(state.currency.decimals), state.theme.grouping)} ${state.currency.code}`;
-    $('#save-state').dataset.state = dirty ? 'dirty' : 'saved';
-    $('#save-state').textContent = dirty ? 'Unsaved changes' : 'Saved';
+  function schedulePreview() {
+    if (previewQueued || !state || document.querySelector('[data-view="editor"]').hidden) return;
+    previewQueued = true;
+    requestAnimationFrame(() => {
+      previewQueued = false;
+      invoiceCanvas.render(render.invoice(state), state.theme.paper);
+      updatePageRule(state.theme);
+    });
   }
 
-  function applyZoom() {
-    const stage = $('#stage-scroll');
-    const sheetWidth = SHEET_WIDTH_PX[state.theme.paper] || SHEET_WIDTH_PX.A4;
-    const fit = Math.min(1.4, Math.max(0.3, (stage.clientWidth - 48) / sheetWidth));
-    const zoom = prefs.zoom || fit;
-    $('#zoom').style.zoom = zoom;
-    $('#zoom-label').textContent = prefs.zoom ? `${Math.round(zoom * 100)}%` : `Fit ${Math.round(zoom * 100)}%`;
+  function updateEditorChrome(saveLabel) {
+    if (!state) return;
+    const view = prepared(state);
+    const status = ledger.status(view, today());
+    const title = String(state.title || 'Invoice').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+    $('#editor-title').textContent = `${title} ${state.number || ''}`.trim();
+    const total = calc.computeTotals(view);
+    const parts = [state.customer.name || 'No customer', ui.STATUS_LABELS[status],
+      `${calc.formatNumber(total.balance, calc.toNum(state.currency.decimals), state.theme.grouping)} ${state.currency.code} due`];
+    if (saveLabel) $('#editor-subtitle').dataset.save = saveLabel;
+    $('#editor-subtitle').textContent = [...parts, $('#editor-subtitle').dataset.save || 'Saved'].join(' · ');
+    document.querySelectorAll('#language-seg [data-lang]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.lang === state.language)));
+    $('#stamp-toggle').checked = Boolean(state.stamp && state.stamp.show);
+    $('#qr-toggle').checked = Boolean(state.qr && state.qr.show);
   }
 
-  function stepZoom(delta) {
-    const current = Number($('#zoom').style.zoom) || 1;
-    prefs = { ...prefs, zoom: Math.min(2, Math.max(0.3, Math.round((current + delta) * 10) / 10)) };
+  function updateBadges() {
+    const all = ledgerInvoices();
+    const overdue = all.filter((inv) => ledger.status(inv, today()) === 'overdue').length;
+    $('#nav-count-invoices').textContent = all.length || '';
+    $('#nav-count-overdue').textContent = overdue || '';
+  }
+
+  function brand() {
+    return state || defaults.newInvoice(store.loadBrand(), '');
+  }
+
+  /* ---------- routing ---------- */
+  const VIEW_TITLES = { dashboard: 'Dashboard', invoices: 'Invoices', editor: 'Invoice', customers: 'Customers', charges: 'Saved Charges', settings: 'Settings' };
+
+  function show(name) {
+    document.querySelectorAll('.view').forEach((v) => { v.hidden = v.dataset.view !== name; });
+    const navKey = name === 'editor' ? 'invoices' : name;
+    document.querySelectorAll('[data-nav]').forEach((a) => {
+      if (a.dataset.nav === navKey) a.setAttribute('aria-current', 'page');
+      else a.removeAttribute('aria-current');
+    });
+    document.title = `${name === 'editor' && state ? `${state.number} · ` : ''}${VIEW_TITLES[name]} · Nayef Bashar Trading`;
+  }
+
+  function openInvoice(id) {
+    if (!state || state.id !== id) {
+      const found = listInvoices().find((inv) => inv.id === id);
+      if (!found) {
+        ui.toast('That invoice could not be found.');
+        location.hash = '#/invoices';
+        return false;
+      }
+      state = structuredClone(found);
+    }
+    prefs = { ...prefs, lastId: id };
     guard(() => store.savePrefs(prefs));
-    applyZoom();
+    editor.render();
+    schedulePreview();
+    updateEditorChrome('Saved');
+    return true;
+  }
+
+  function route() {
+    persist();
+    $('#combo').hidden = true;
+    const [, view = 'invoices', rawArg = ''] = location.hash.split('/');
+    const arg = decodeURIComponent(rawArg);
+    if (view === 'invoice') {
+      if (openInvoice(arg)) show('editor');
+      schedulePreview();
+    } else if (view === 'dashboard') {
+      show('dashboard');
+      NB.dashboard.render();
+    } else if (view === 'customers') {
+      show('customers');
+      views.renderCustomers(arg);
+    } else if (view === 'charges') {
+      show('charges');
+      views.renderCharges();
+    } else if (view === 'settings') {
+      show('settings');
+      views.renderSettings();
+    } else {
+      show('invoices');
+      views.renderInvoices();
+    }
+    updateBadges();
   }
 
   /* ---------- files ---------- */
   function download(filename, data) {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
     const a = Object.assign(document.createElement('a'), { href: url, download: filename });
     document.body.append(a);
     a.click();
@@ -145,235 +191,319 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  const safeName = (s) => String(s || 'invoice').replace(/[^\w.-]+/g, '_');
-
-  function readFile(file, as) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('Could not read the file.'));
-      if (as === 'dataUrl') reader.readAsDataURL(file);
-      else reader.readAsText(file);
-    });
-  }
+  const readFile = (file, as) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Could not read the file.'));
+    if (as === 'dataUrl') reader.readAsDataURL(file);
+    else reader.readAsText(file);
+  });
 
   async function uploadAsset({ name, file }) {
-    if (!file.type.startsWith('image/')) {
-      toast('Please choose an image file.', 'error');
-      return;
-    }
+    if (!file.type.startsWith('image/')) return ui.toast('Please choose an image file.', 'error');
+    if (file.size > MAX_UPLOAD_BYTES) return ui.toast('Image is too large. Use one under 1.5 MB.', 'error');
     try {
       store.setAsset(name, await readFile(file, 'dataUrl'));
       if (name === 'logo') set('company.logo', 'custom', true);
-      else set('sections.stamp', true, true);
-      toast(name === 'logo' ? 'Logo updated.' : 'Stamp added to the signature line.');
+      else set('stamp', { ...state.stamp, source: 'custom', show: true }, true);
+      return ui.toast(name === 'logo' ? 'Logo updated.' : 'Stamp image updated.');
     } catch (err) {
-      toast(err.message, 'error');
+      return ui.toast(err.message, 'error');
     }
   }
 
   async function importFile(file) {
     try {
       const result = store.importAll(JSON.parse(await readFile(file, 'text')));
+      invalidate();
       if (result.kind === 'invoice') {
-        replaceState(result.invoice, true);
-        toast('Invoice imported. Press Save to keep it in your library.');
+        const inv = store.saveInvoice(defaults.migrate({ ...result.invoice, id: defaults.uid() }));
+        invalidate();
+        location.hash = `#/invoice/${encodeURIComponent(inv.id)}`;
+        ui.toast('Invoice imported.');
       } else {
-        editor.render();
-        schedulePreview();
-        toast(`Backup restored: ${result.count} invoice${result.count === 1 ? '' : 's'}.`);
+        route();
+        ui.toast(`Backup restored: ${result.count} document${result.count === 1 ? '' : 's'}.`);
       }
     } catch (err) {
-      toast(err instanceof SyntaxError ? 'That file is not valid JSON.' : err.message, 'error');
+      ui.toast(err instanceof SyntaxError ? 'That file is not valid JSON.' : err.message, 'error');
     }
   }
 
   /* ---------- commands ---------- */
-  function keepCurrent() {
-    if (dirty && hasContent(state)) {
-      store.saveInvoice(state);
-      return ` (saved ${state.number} first)`;
+  function printView(viewName) {
+    persist();
+    const view = document.querySelector(`.view[data-view="${viewName}"]`);
+    const previous = document.title;
+    if (viewName === 'editor' && state) {
+      document.title = `${state.title} ${state.number} ${state.customer.name}`.replace(/[\\/:*?"<>|]+/g, ' ').trim();
+      updatePageRule(state.theme);
+    } else {
+      document.title = `Statement of Account ${today()}`;
     }
-    return '';
+    view.classList.add('is-printing');
+    const cleanup = () => {
+      view.classList.remove('is-printing');
+      document.title = previous;
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    window.print();
   }
 
-  function printInvoice() {
-    const previous = document.title;
-    document.title = safeName(`${state.title} ${state.number} ${state.customer.name}`).replace(/_/g, ' ');
-    $('#preview').innerHTML = render.invoice(state);
-    window.print();
-    document.title = previous;
+  let pdfBusy = false;
+  async function downloadPdf() {
+    if (!state || pdfBusy) return;
+    persist();
+    const btn = $('#download-pdf');
+    const label = btn.querySelector('span');
+    pdfBusy = true;
+    btn.disabled = true;
+    label.textContent = 'Preparing…';
+    try {
+      const filename = `${NB.pdf.safeFilename(state)}.pdf`;
+      await NB.pdf.downloadInvoice(state, filename);
+      ui.toast(`Saved “${filename}” to your Downloads.`);
+    } catch (err) {
+      ui.toast(err.message || 'PDF export failed. Use Print / PDF instead.', 'error');
+    } finally {
+      pdfBusy = false;
+      btn.disabled = false;
+      label.textContent = 'Download PDF';
+    }
+  }
+
+  function duplicateInvoice(source) {
+    const copy = defaults.migrate({
+      ...Object.fromEntries(Object.entries(structuredClone(source)).filter(([k]) => !LINK_KEYS.includes(k))), id: defaults.uid(), number: store.consumeNumber(), status: 'draft', payments: [],
+      meta: source.meta.map((f) => (f.key === 'invoiceDate' ? { ...f, value: today() } : f.key === 'dueDate' ? { ...f, value: '' } : f)),
+      createdAt: new Date().toISOString(),
+    });
+    const saved = store.saveInvoice(copy);
+    invalidate();
+    return saved;
   }
 
   const COMMANDS = {
     new: () => {
-      const note = keepCurrent();
-      replaceState(defaults.newInvoice(store.loadBrand(), store.consumeNumber()));
-      toast(`New invoice started${note}.`);
+      persist();
+      openTemplateDialog();
     },
-    save: () => {
-      state = store.saveInvoice(state);
-      dirty = false;
-      updateChrome();
-      store.saveDraft(state);
-      toast(`${state.number} saved to your library.`);
+    'new-from': ({ id }) => {
+      const template = id ? store.listTemplates().find((t) => t.id === id) : null;
+      state = defaults.newInvoice(store.loadBrand(), store.consumeNumber(), template);
+      prefs = { ...prefs, tab: 'document' };
+      location.hash = `#/invoice/${encodeURIComponent(state.id)}`;
+    },
+    convert: ({ target }) => {
+      persist(true);
+      const { source, target: created } = documents.convert(state, target, { id: defaults.uid(), number: store.consumeNumber(), today: today() });
+      store.saveInvoice(source);
+      state = store.saveInvoice(defaults.migrate(created));
+      invalidate();
+      location.hash = `#/invoice/${encodeURIComponent(state.id)}`;
+      ui.toast(`${created.title.charAt(0)}${created.title.slice(1).toLowerCase()} ${created.number} created from ${source.number}.`);
+    },
+    'apply-template': ({ id }) => {
+      const template = store.listTemplates().find((t) => t.id === id);
+      if (!template) return;
+      update((cur) => defaults.migrate(defaults.applyTemplate(cur, template)), true);
+      ui.toast(`Applied “${template.name}”. Your customer, items and payments were kept.`);
+    },
+    'save-template': () => {
+      const name = `${String(state.title).charAt(0)}${String(state.title).slice(1).toLowerCase()} — ${state.customer.name || 'custom'} (${today()})`;
+      store.saveTemplate(defaults.templateFromInvoice(state, name));
+      ui.toast('Template saved. Rename or delete it in Settings → Templates.');
     },
     duplicate: () => {
-      const note = keepCurrent();
-      const date = defaults.today();
-      replaceState({
-        ...structuredClone(state), id: defaults.uid(), number: store.consumeNumber(), status: 'draft',
-        meta: state.meta.map((f, i) => (f.type === 'date' && i === 0 ? { ...f, value: date } : f)),
-        createdAt: new Date().toISOString(),
-      }, true);
-      toast(`Duplicated as ${state.number}${note}.`);
+      persist();
+      const copy = duplicateInvoice(state);
+      state = copy;
+      location.hash = `#/invoice/${encodeURIComponent(copy.id)}`;
+      ui.toast(`Duplicated as ${copy.number}.`);
     },
-    print: printInvoice,
-    library: openLibrary,
-    sample: () => {
-      const note = keepCurrent();
-      replaceState(defaults.sampleInvoice(store.loadBrand(), state.number), true);
-      toast(`Sample loaded${note}.`);
+    'list-duplicate': ({ id }) => {
+      const source = listInvoices().find((inv) => inv.id === id);
+      if (!source) return;
+      const copy = duplicateInvoice(source);
+      views.renderInvoices();
+      updateBadges();
+      ui.toast(`Duplicated as ${copy.number}.`);
     },
+    'list-delete': ({ id }) => {
+      const inv = listInvoices().find((x) => x.id === id);
+      if (!inv || !ui.confirmTwice(`delete-${id}`, `Click delete again to permanently remove ${inv.number}.`)) return;
+      store.deleteInvoice(id);
+      blobs.deleteFilesFor(id).catch(() => ui.toast('Invoice deleted, but its attachments could not be removed.', 'error'));
+      if (state && state.id === id) state = null;
+      invalidate();
+      views.renderInvoices();
+      updateBadges();
+      ui.toast(`${inv.number} deleted.`);
+    },
+    print: () => printView('editor'),
+    'download-pdf': () => downloadPdf(),
+    'print-statement': () => printView('customers'),
     'save-default': () => {
       store.saveBrand(defaults.brandFromInvoice(state));
-      toast('Saved. New invoices will start with this company, design and wording.');
+      ui.toast('New invoices will now start with this design and wording.');
     },
     'reset-brand': () => {
-      if (!confirmTwice('reset-brand', 'Click again to reset the design, columns and sections to factory defaults.')) return;
+      if (!ui.confirmTwice('reset-brand', 'Click again to reset the new-invoice design to factory defaults.')) return;
       store.resetBrand();
-      const base = defaults.defaultBrand();
-      replaceState({ ...state, theme: base.theme, sections: base.sections, columns: base.columns, words: base.words }, true);
-      toast('Design reset.');
+      ui.toast('Defaults reset. Existing invoices are unchanged.');
     },
-    'export-all': () => download(`nb-invoices-backup-${defaults.today()}.json`, store.exportAll()),
-    'export-one': () => download(`${safeName(state.number)}.json`, state),
+    'export-all': () => download(`nb-invoices-backup-${today()}.json`, store.exportAll()),
     import: () => $('#import-file').click(),
     'upload-asset': uploadAsset,
     'client-save': () => {
       store.saveClient(state.customer);
       editor.render();
-      toast(`${state.customer.name} saved to clients.`);
+      ui.toast(`${state.customer.name} saved to customers.`);
     },
-    'client-delete': () => {
-      if (!confirmTwice('client-delete', 'Click Forget again to remove this saved client.')) return;
-      store.deleteClient(state.customer.name);
-      editor.render();
-      toast('Client removed.');
-    },
+    'charge-add': () => views.addCharge(),
   };
 
-  const command = (name, payload) => guard(() => COMMANDS[name] && COMMANDS[name](payload));
+  const command = (name, payload) => guard(() => (COMMANDS[name] ? COMMANDS[name](payload || {}) : undefined));
 
-  /* ---------- library ---------- */
-  function libraryRows(query) {
-    const q = query.trim().toLowerCase();
-    return store.listInvoices().map(normalize).filter((inv) => !q
-      || [inv.number, inv.customer.name, inv.status, inv.title].some((v) => String(v || '').toLowerCase().includes(q)));
+  function openTemplateDialog() {
+    const { esc } = ui;
+    const cards = store.listTemplates().map((t) => `<button type="button" class="template-card" data-template="${esc(t.id)}">
+        <strong>${esc(t.name)}</strong><span>${esc(t.description || '')}</span>${t.builtIn ? '' : '<em>Your template</em>'}</button>`).join('');
+    $('#template-grid').innerHTML = `<button type="button" class="template-card" data-template=""><strong>My Defaults</strong><span>Your saved design and wording.</span></button>${cards}`;
+    $('#template-dialog').showModal();
   }
 
-  function renderLibrary() {
-    const rows = libraryRows($('#lib-search').value);
-    const { esc } = render;
-    $('#lib-list').innerHTML = rows.length ? rows.map((inv) => {
-      const total = calc.computeTotals(inv).balance;
-      const date = inv.meta.find((f) => f.type === 'date' && f.value);
-      const current = inv.id === state.id ? ' is-current' : '';
-      return `<li class="lib-row${current}">
-        <div class="lib-main"><strong>${esc(inv.number || 'Unnumbered')}</strong><span>${esc(inv.customer.name || 'No customer')}</span></div>
-        <div class="lib-meta"><span class="chip chip--${esc(inv.status)}">${esc(inv.status)}</span><span>${esc(inv.title)}</span>
-          <span>${esc(date ? calc.formatDate(date.value, inv.theme.dateFormat) : '')}</span></div>
-        <div class="lib-total">${esc(calc.formatNumber(total, calc.toNum(inv.currency.decimals), inv.theme.grouping))} <small>${esc(inv.currency.code)}</small></div>
-        <div class="lib-actions">
-          <button type="button" class="btn primary" data-lib="open" data-id="${esc(inv.id)}">Open</button>
-          <button type="button" class="btn ghost danger" data-lib="delete" data-id="${esc(inv.id)}">Delete</button>
-        </div></li>`;
-    }).join('') : '<li class="lib-empty">No saved invoices match. Press <b>Save</b> on an invoice to keep it here.</li>';
-  }
-
-  function openLibrary() {
-    renderLibrary();
-    $('#library').showModal();
-    $('#lib-search').focus();
-  }
-
-  function onLibraryClick(event) {
-    const btn = event.target.closest('[data-lib]');
-    if (!btn) return;
-    const { id } = btn.dataset;
-    guard(() => {
-      if (btn.dataset.lib === 'open') {
-        const note = id === state.id ? '' : keepCurrent();
-        replaceState(store.getInvoice(id));
-        $('#library').close();
-        toast(`Opened ${state.number}${note}.`);
-      } else if (confirmTwice(`delete-${id}`, 'Click Delete again to permanently remove this invoice.')) {
-        store.deleteInvoice(id);
-        if (id === state.id) dirty = true;
-        renderLibrary();
-        updateChrome();
-        toast('Invoice deleted.');
-      }
-    });
+  async function reloadFonts() {
+    try {
+      NB.customFonts = await blobs.loadFonts();
+    } catch (err) {
+      NB.customFonts = [];
+    }
+    schedulePreview();
   }
 
   /* ---------- boot ---------- */
+  function migrateLegacyDraft() {
+    if (prefs.migratedDraft) return;
+    const draft = store.loadDraft();
+    if (draft && !store.getInvoice(draft.id)) {
+      const inv = defaults.migrate(draft);
+      if (hasContent(inv)) store.saveInvoice({ ...inv, status: inv.status === 'draft' ? 'sent' : inv.status });
+    }
+    if (!store.listInvoices().length) store.saveInvoice(defaults.sampleInvoice(store.loadBrand(), store.consumeNumber()));
+    prefs = { ...prefs, migratedDraft: true };
+    store.savePrefs(prefs);
+  }
+
   function bindShell() {
-    document.querySelectorAll('[data-cmd]').forEach((btn) => btn.addEventListener('click', () => command(btn.dataset.cmd)));
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-cmd]');
+      if (btn && btn.tagName === 'BUTTON' && !btn.closest('#inspector')) command(btn.dataset.cmd);
+    });
+    $('#template-grid').addEventListener('click', (e) => {
+      const card = e.target.closest('[data-template]');
+      if (!card) return;
+      $('#template-dialog').close();
+      command('new-from', { id: card.dataset.template });
+    });
     $('#import-file').addEventListener('change', (e) => {
       if (e.target.files[0]) importFile(e.target.files[0]);
       e.target.value = '';
     });
-    $('#lib-search').addEventListener('input', renderLibrary);
-    $('#lib-list').addEventListener('click', onLibraryClick);
-    $('#zoom-in').addEventListener('click', () => stepZoom(0.1));
-    $('#zoom-out').addEventListener('click', () => stepZoom(-0.1));
-    $('#zoom-fit').addEventListener('click', () => {
-      prefs = { ...prefs, zoom: 0 };
-      guard(() => store.savePrefs(prefs));
-      applyZoom();
+    $('#language-seg').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-lang]');
+      if (b && state) set('language', b.dataset.lang, true);
     });
-    window.addEventListener('resize', () => { if (!prefs.zoom) applyZoom(); });
-    document.querySelectorAll('[data-view]').forEach((btn) => btn.addEventListener('click', () => {
-      document.body.dataset.view = btn.dataset.view;
-      document.querySelectorAll('[data-view]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
-      if (!prefs.zoom) applyZoom();
-    }));
+    $('#qr-toggle').addEventListener('change', (e) => {
+      if (state) set('qr', { ...state.qr, show: e.target.checked }, true);
+    });
+    $('#stamp-toggle').addEventListener('change', (e) => {
+      if (state) set('stamp', { ...state.stamp, show: e.target.checked }, true);
+    });
+    document.querySelector('.pane-switch').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-pane]');
+      if (!b) return;
+      document.querySelector('.editor-body').dataset.pane = b.dataset.pane;
+      document.querySelectorAll('.pane-switch [data-pane]').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+      invoiceCanvas.applyZoom();
+    });
     document.addEventListener('keydown', (e) => {
       if (!(e.metaKey || e.ctrlKey)) return;
       const key = e.key.toLowerCase();
-      if (key === 's') { e.preventDefault(); command('save'); }
-      if (key === 'p') { e.preventDefault(); command('print'); }
+      const onEditor = !document.querySelector('[data-view="editor"]').hidden;
+      const onCustomers = !document.querySelector('[data-view="customers"]').hidden;
+      if (key === 's') {
+        e.preventDefault();
+        persist();
+        ui.toast('Saved.');
+      } else if (key === 'd' && e.shiftKey && onEditor) {
+        e.preventDefault();
+        downloadPdf();
+      } else if (key === 'p' && (onEditor || onCustomers)) {
+        e.preventDefault();
+        printView(onEditor ? 'editor' : 'customers');
+      }
+    });
+    window.addEventListener('hashchange', route);
+    window.addEventListener('beforeunload', persist);
+    window.addEventListener('resize', () => {
+      invoiceCanvas.applyZoom();
+      statementCanvas.applyZoom();
     });
   }
 
   function boot() {
     prefs = store.loadPrefs();
-    const draft = store.loadDraft();
-    state = draft ? normalize(draft) : defaults.sampleInvoice(store.loadBrand(), store.consumeNumber());
     settings = store.loadSettings();
-    editor.mount($('#editor'), {
-      state: () => state,
-      settings: () => settings,
-      prefs: () => prefs,
-      set,
-      setSetting: (key, value) => {
-        settings = { ...settings, [key]: value };
-        guard(() => store.saveSettings(settings));
-      },
-      savePrefs: (patch) => {
-        prefs = { ...prefs, ...patch };
-        guard(() => store.savePrefs(prefs));
-      },
-      command,
-      toast,
+    guard(migrateLegacyDraft);
+    settings = store.loadSettings();
+    ui.bind(() => state || {});
+
+    invoiceCanvas = NB.canvas.create($('#invoice-canvas'), {
+      getZoom: () => prefs.zoom || 0,
+      setZoom: (zoom) => { prefs = { ...prefs, zoom }; guard(() => store.savePrefs(prefs)); },
+      onMove: (kind, patch) => set(kind, { ...state[kind], ...patch }, prefs.tab === 'style'),
+      onLayoutChange: (order) => set('layout', order, prefs.tab === 'style'),
+      onColumnResize: (key, width) => set('columns', state.columns.map((c) => (c.key === key ? { ...c, width } : c))),
+      onArrangeStart: () => ui.toast('Drag sections to reorder them. Drag the blue column edges to resize. Double-click an edge to reset.'),
+      render: () => { previewQueued = false; schedulePreview(); },
     });
+    statementCanvas = NB.canvas.create($('#statement-canvas'), {});
+
+    editor.mount($('#inspector'), {
+      state: () => state,
+      set,
+      update,
+      command,
+      guard,
+      today,
+      toast: ui.toast,
+      prepared,
+      creditNotesFor,
+      persistNow: () => persist(true),
+      reloadFonts,
+      prefs: () => prefs,
+      savePrefs: (patch) => { prefs = { ...prefs, ...patch }; guard(() => store.savePrefs(prefs)); },
+    });
+    NB.dashboard.mount({ ledgerInvoices, today, settings: () => settings });
+    views.mount({
+      listInvoices: ledgerInvoices,
+      command,
+      guard,
+      today,
+      brand,
+      statementCanvas,
+      updatePageRule,
+      settings: () => settings,
+      setSetting: (key, value) => { settings = { ...settings, [key]: value }; guard(() => store.saveSettings(settings)); },
+    });
+
     bindShell();
-    schedulePreview();
-    if (!draft) {
-      dirty = true;
-      toast('Welcome! This is a sample built from your reference invoice. Edit anything on the left.');
-    }
+    reloadFonts().then(() => { if (state) editor.render(); });
+    const target = prefs.lastId && store.getInvoice(prefs.lastId) ? `#/invoice/${encodeURIComponent(prefs.lastId)}` : '#/invoices';
+    if (!location.hash) location.hash = target;
+    else route();
   }
 
   document.addEventListener('DOMContentLoaded', boot);

@@ -4,9 +4,9 @@
 
   const KEY = {
     draft: 'nbinv.draft', invoices: 'nbinv.invoices', brand: 'nbinv.brand', clients: 'nbinv.clients',
-    settings: 'nbinv.settings', prefs: 'nbinv.prefs', asset: (name) => `nbinv.asset.${name}`,
+    settings: 'nbinv.settings', prefs: 'nbinv.prefs', catalog: 'nbinv.catalog', templates: 'nbinv.templates', asset: (name) => `nbinv.asset.${name}`,
   };
-  const DEFAULT_SETTINGS = { prefix: 'NB', pattern: '{PREFIX}-{YYYY}-{SEQ}', pad: 4, next: 1 };
+  const DEFAULT_SETTINGS = { prefix: 'NB', pattern: '{PREFIX}-{YYYY}-{SEQ}', pad: 4, next: 1, baseCurrency: 'KWD' };
   const MAX_ASSET_BYTES = 1.5 * 1024 * 1024;
 
   class StorageError extends Error {}
@@ -79,6 +79,27 @@
   }
   const deleteClient = (name) => write(KEY.clients, listClients().filter((c) => c.name !== name));
 
+  const listCatalog = () => read(KEY.catalog, null) || structuredClone(NB.defaults.CATALOG_SEED);
+  const saveCatalog = (list) => write(KEY.catalog, list);
+  function upsertCatalogItem(item) {
+    const name = String(item.name || '').trim();
+    if (!name) throw new StorageError('Give the charge a description before saving it.');
+    const list = listCatalog();
+    const existing = list.find((c) => c.name.trim().toLowerCase() === name.toLowerCase());
+    const entry = { ...(existing || { id: NB.defaults.uid() }), ...item, name };
+    saveCatalog(existing ? list.map((c) => (c.id === existing.id ? entry : c)) : [...list, entry]);
+    return Boolean(existing);
+  }
+
+  const customTemplates = () => read(KEY.templates, []);
+  const listTemplates = () => [...NB.defaults.TEMPLATES, ...customTemplates()];
+  function saveTemplate(template) {
+    const name = String(template.name || '').trim();
+    if (!name) throw new StorageError('Give the template a name.');
+    write(KEY.templates, [...customTemplates().filter((t) => t.id !== template.id), { ...template, name }]);
+  }
+  const deleteTemplate = (id) => write(KEY.templates, customTemplates().filter((t) => t.id !== id));
+
   const getAsset = (name) => read(KEY.asset(name), null);
   function setAsset(name, dataUrl) {
     if (dataUrl.length > MAX_ASSET_BYTES * 1.37) throw new StorageError('Image is too large. Use an image under 1.5 MB.');
@@ -86,13 +107,13 @@
   }
   const removeAsset = (name) => localStorage.removeItem(KEY.asset(name));
 
-  const loadPrefs = () => read(KEY.prefs, { zoom: 0, open: ['document', 'items'] });
+  const loadPrefs = () => ({ zoom: 0, tab: 'content', ...read(KEY.prefs, {}) });
   const savePrefs = (prefs) => write(KEY.prefs, prefs);
 
   function exportAll() {
     return {
       app: 'nb-invoice-studio', version: 1, exportedAt: new Date().toISOString(),
-      invoices: invoiceMap(), brand: read(KEY.brand, null), clients: listClients(), settings: loadSettings(),
+      invoices: invoiceMap(), brand: read(KEY.brand, null), clients: listClients(), settings: loadSettings(), catalog: read(KEY.catalog, null), templates: customTemplates(),
       assets: { logo: getAsset('logo'), stamp: getAsset('stamp') },
     };
   }
@@ -103,6 +124,8 @@
       write(KEY.invoices, { ...invoiceMap(), ...(data.invoices || {}) });
       if (data.brand) write(KEY.brand, data.brand);
       if (Array.isArray(data.clients)) write(KEY.clients, data.clients);
+      if (Array.isArray(data.catalog)) saveCatalog(data.catalog);
+      if (Array.isArray(data.templates)) write(KEY.templates, data.templates);
       if (data.settings) saveSettings({ ...DEFAULT_SETTINGS, ...data.settings });
       Object.entries(data.assets || {}).forEach(([name, url]) => { if (typeof url === 'string') setAsset(name, url); });
       return { kind: 'backup', count: Object.keys(data.invoices || {}).length };
@@ -114,6 +137,6 @@
   NB.store = {
     StorageError, loadDraft, saveDraft, listInvoices, getInvoice, saveInvoice, deleteInvoice,
     loadBrand, saveBrand, resetBrand, loadSettings, saveSettings, formatDocNumber, consumeNumber,
-    listClients, saveClient, deleteClient, getAsset, setAsset, removeAsset, loadPrefs, savePrefs, exportAll, importAll,
+    listClients, saveClient, deleteClient, listCatalog, saveCatalog, upsertCatalogItem, listTemplates, saveTemplate, deleteTemplate, getAsset, setAsset, removeAsset, loadPrefs, savePrefs, exportAll, importAll,
   };
 })(window.NB = window.NB || {});

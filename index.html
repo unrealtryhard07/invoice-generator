@@ -2,79 +2,171 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Invoice Studio · Nayef Bashar Trading</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Invoices · Nayef Bashar Trading</title>
   <link rel="icon" href="assets/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=Source+Serif+4:wght@400;600;700&family=Tajawal:wght@400;500;700&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Cairo:wght@400;600;700&family=Cinzel:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=Noto+Naskh+Arabic:wght@400;600;700&family=Source+Serif+4:wght@400;600;700&family=Tajawal:wght@400;500;700&display=swap">
   <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/views.css">
   <link rel="stylesheet" href="css/invoice.css">
   <style id="page-rule"></style>
 </head>
-<body data-view="edit">
-  <header class="topbar">
-    <div class="brand">
-      <img src="assets/logo.png" alt="" class="brand-mark" width="52" height="36">
-      <div class="brand-text">
-        <span class="brand-name">Invoice Studio</span>
-        <span class="brand-doc"><b id="doc-number">—</b> · <span id="doc-customer">—</span></span>
+<body>
+  <div class="window">
+    <nav class="sidebar" aria-label="Sections">
+      <div class="sidebar-brand">
+        <img src="assets/logo.png" alt="" width="44" height="30">
+        <div><strong>Nayef Bashar</strong><span>Trading Est.</span></div>
       </div>
-    </div>
-    <div class="doc-total" aria-live="polite">
-      <span class="doc-total-label">Amount due</span>
-      <strong id="doc-total">—</strong>
-      <span id="save-state" class="save-state" data-state="saved">Saved</span>
-    </div>
-    <nav class="actions" aria-label="Invoice actions">
-      <button type="button" class="tb-btn" data-cmd="new">New</button>
-      <button type="button" class="tb-btn" data-cmd="duplicate">Duplicate</button>
-      <button type="button" class="tb-btn" data-cmd="library">Library</button>
-      <button type="button" class="tb-btn" data-cmd="save" title="Save (⌘S)">Save</button>
-      <button type="button" class="tb-btn tb-btn--gold" data-cmd="print" title="Print or save as PDF (⌘P)">Print / PDF</button>
+      <button type="button" class="btn btn--primary sidebar-new" data-cmd="new">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>New Invoice
+      </button>
+      <ul class="nav-list" role="list">
+        <li><a href="#/dashboard" data-nav="dashboard"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 13.5v-4M6.2 13.5V6M9.8 13.5V8.5M13.5 13.5v-11"/></svg><span>Dashboard</span></a></li>
+        <li><a href="#/invoices" data-nav="invoices"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13M6 8h5M6 10.5h5"/></svg><span>Invoices</span><em id="nav-count-invoices"></em></a></li>
+        <li><a href="#/customers" data-nav="customers"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 14c.5-2.7 2.2-4 4.5-4s4 1.3 4.5 4"/><path d="M10.5 3.2a2.4 2.4 0 1 1 0 4.6M12 10.2c1.4.4 2.3 1.6 2.5 3.8"/></svg><span>Customers</span><em id="nav-count-overdue" class="is-alert"></em></a></li>
+        <li><a href="#/charges" data-nav="charges"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8.6 1.5h5.9v5.9L7.4 14.5 1.5 8.6z"/><circle cx="11.3" cy="4.7" r="1"/></svg><span>Saved Charges</span></a></li>
+        <li><a href="#/settings" data-nav="settings"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg><span>Settings</span></a></li>
+      </ul>
+      <p class="sidebar-foot">Saved on this Mac · <a href="#/settings">Back up</a></p>
     </nav>
-  </header>
 
-  <div class="view-switch" role="group" aria-label="Switch view">
-    <button type="button" data-view="edit" aria-pressed="true">Edit</button>
-    <button type="button" data-view="preview" aria-pressed="false">Preview</button>
+    <main class="main" id="main">
+      <!-- Dashboard -->
+      <section class="view" data-view="dashboard" aria-labelledby="dashboard-title" hidden>
+        <header class="toolbar">
+          <div class="toolbar-title"><h1 id="dashboard-title">Dashboard</h1><p id="dashboard-subtitle"></p></div>
+          <div class="toolbar-center"><div class="seg" role="radiogroup" aria-label="Period" id="dashboard-period"></div></div>
+        </header>
+        <div class="view-body view-body--dashboard" id="dashboard-body"></div>
+      </section>
+
+      <!-- Invoices list -->
+      <section class="view" data-view="invoices" aria-labelledby="invoices-title" hidden>
+        <header class="toolbar">
+          <div class="toolbar-title"><h1 id="invoices-title">Invoices</h1><p id="invoices-subtitle"></p></div>
+          <div class="toolbar-center">
+            <div class="seg" role="tablist" aria-label="Filter invoices" id="invoice-filter">
+              <button type="button" role="tab" data-filter="all" aria-selected="true">All</button>
+              <button type="button" role="tab" data-filter="draft" aria-selected="false">Drafts</button>
+              <button type="button" role="tab" data-filter="open" aria-selected="false">Unpaid</button>
+              <button type="button" role="tab" data-filter="overdue" aria-selected="false">Overdue</button>
+              <button type="button" role="tab" data-filter="paid" aria-selected="false">Paid</button>
+            </div>
+          </div>
+          <div class="toolbar-end">
+            <label class="search"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input type="search" id="invoice-search" placeholder="Search" aria-label="Search invoices"></label>
+          </div>
+        </header>
+        <div class="view-body" id="invoice-list"></div>
+      </section>
+
+      <!-- Invoice editor -->
+      <section class="view view--editor" data-view="editor" aria-label="Invoice editor" hidden>
+        <header class="toolbar">
+          <a class="btn btn--plain btn--icon" href="#/invoices" aria-label="Back to invoices"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg></a>
+          <div class="toolbar-title"><h1 id="editor-title">Invoice</h1><p id="editor-subtitle"></p></div>
+          <div class="toolbar-center">
+            <div class="seg" role="radiogroup" aria-label="Invoice language" id="language-seg">
+              <button type="button" role="radio" data-lang="en" aria-checked="false">English</button>
+              <button type="button" role="radio" data-lang="bi" aria-checked="true">Both</button>
+              <button type="button" role="radio" data-lang="ar" aria-checked="false">العربية</button>
+            </div>
+          </div>
+          <div class="toolbar-end">
+            <label class="switch-inline" title="Show company stamp"><input type="checkbox" id="stamp-toggle"><i aria-hidden="true"></i><span>Stamp</span></label>
+            <label class="switch-inline" title="Show QR code"><input type="checkbox" id="qr-toggle"><i aria-hidden="true"></i><span>QR</span></label>
+            <button type="button" class="btn" data-cmd="duplicate">Duplicate</button>
+            <button type="button" class="btn" data-cmd="download-pdf" id="download-pdf"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8M4.5 6.5 8 10l3.5-3.5M2.5 13.5h11"/></svg><span>Download PDF</span></button>
+            <button type="button" class="btn btn--primary" data-cmd="print"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6V1.5h7V6M4.5 11.5h-3v-5.5h13v5.5h-3"/><path d="M4.5 9.5h7v5h-7z"/></svg>Print / PDF</button>
+          </div>
+        </header>
+        <div class="editor-body">
+          <div class="pane-switch seg" role="tablist" aria-label="Editor pane">
+            <button type="button" role="tab" data-pane="inspector" aria-selected="true">Edit</button>
+            <button type="button" role="tab" data-pane="canvas" aria-selected="false">Preview</button>
+          </div>
+          <div class="canvas" id="invoice-canvas" data-pane-id="canvas">
+            <div class="canvas-scroll"><div class="canvas-zoom"><div class="canvas-host print-host" data-print="invoice"></div></div></div>
+            <div class="zoom-pill" role="group" aria-label="Zoom">
+              <button type="button" data-zoom="-1" aria-label="Zoom out">−</button>
+              <button type="button" data-zoom="fit" class="zoom-value">Fit</button>
+              <button type="button" data-zoom="1" aria-label="Zoom in">+</button>
+              <span class="pill-divider" aria-hidden="true"></span>
+              <button type="button" data-arrange aria-pressed="false" class="arrange-btn" title="Drag sections and resize columns">Arrange</button>
+            </div>
+          </div>
+          <aside class="inspector" id="inspector" data-pane-id="inspector" aria-label="Invoice inspector"></aside>
+        </div>
+      </section>
+
+      <!-- Customers & statements -->
+      <section class="view" data-view="customers" aria-labelledby="customers-title" hidden>
+        <header class="toolbar">
+          <div class="toolbar-title"><h1 id="customers-title">Customers</h1><p id="customers-subtitle"></p></div>
+          <div class="toolbar-end statement-controls" id="statement-controls"></div>
+        </header>
+        <div class="split">
+          <div class="split-list" id="customer-list"></div>
+          <div class="canvas" id="statement-canvas">
+            <div class="canvas-scroll"><div class="canvas-zoom"><div class="canvas-host print-host" data-print="statement"></div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Saved charges -->
+      <section class="view" data-view="charges" aria-labelledby="charges-title" hidden>
+        <header class="toolbar">
+          <div class="toolbar-title"><h1 id="charges-title">Saved Charges</h1><p>Type a few letters in any line item to use these.</p></div>
+          <div class="toolbar-end">
+            <label class="search"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg><input type="search" id="charge-search" placeholder="Search" aria-label="Search charges"></label>
+            <button type="button" class="btn btn--primary" data-cmd="charge-add"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Add Charge</button>
+          </div>
+        </header>
+        <div class="view-body" id="charge-list"></div>
+      </section>
+
+      <!-- Settings -->
+      <section class="view" data-view="settings" aria-labelledby="settings-title" hidden>
+        <header class="toolbar"><div class="toolbar-title"><h1 id="settings-title">Settings</h1></div></header>
+        <div class="view-body view-body--narrow" id="settings-body"></div>
+      </section>
+    </main>
   </div>
 
-  <main class="workspace">
-    <aside class="editor" id="editor" aria-label="Invoice editor"></aside>
-    <section class="stage" aria-label="Invoice preview">
-      <div class="stage-tools">
-        <span class="stage-hint">Live preview · prints exactly as shown</span>
-        <div class="zoom" role="group" aria-label="Zoom">
-          <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
-          <button type="button" id="zoom-fit" class="zoom-label"><span id="zoom-label">Fit</span></button>
-          <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
-        </div>
-      </div>
-      <div class="stage-scroll" id="stage-scroll">
-        <div class="stage-zoom" id="zoom"><div id="preview"></div></div>
-      </div>
-    </section>
-  </main>
-
-  <dialog id="library" class="library" aria-labelledby="lib-title">
-    <header class="lib-head">
-      <h2 id="lib-title">Invoice library</h2>
-      <input type="search" id="lib-search" placeholder="Search number, customer, status…" aria-label="Search invoices">
-      <form method="dialog"><button class="btn ghost" aria-label="Close library">Close</button></form>
-    </header>
-    <ul id="lib-list" class="lib-list"></ul>
+  <dialog class="sheet-dialog" id="template-dialog" aria-labelledby="template-dialog-title">
+    <form method="dialog">
+      <header><h2 id="template-dialog-title">New Document</h2><p>Choose a starting point. You can change everything afterwards.</p></header>
+      <div class="template-grid" id="template-grid"></div>
+      <footer><button class="btn" value="cancel">Cancel</button></footer>
+    </form>
   </dialog>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div class="popover" id="combo" role="listbox" aria-label="Saved charges" hidden></div>
+  <div class="hud" id="toast" role="status" aria-live="polite"></div>
   <input type="file" id="import-file" accept="application/json,.json" hidden>
 
+  <script src="vendor/qrcode.js"></script>
+  <script src="assets/embedded.js"></script>
   <script src="js/calc.js"></script>
   <script src="js/words.js"></script>
+  <script src="js/words-ar.js"></script>
+  <script src="js/ledger.js"></script>
+  <script src="js/documents.js"></script>
   <script src="js/defaults.js"></script>
   <script src="js/store.js"></script>
+  <script src="js/blobs.js"></script>
   <script src="js/render.js"></script>
+  <script src="js/statement.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/canvas.js"></script>
   <script src="js/editor.js"></script>
+  <script src="js/views.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/pdf.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
