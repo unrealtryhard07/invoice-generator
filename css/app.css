@@ -165,7 +165,7 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
 
 .switch { position: relative; display: inline-block; width: 38px; height: 22px; flex: none; }
 .switch input, .switch-inline input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: default; }
-.switch i, .switch-inline i { position: absolute; inset: 0; border-radius: 99px; background: var(--fill-1); transition: background var(--duration-normal); }
+.switch i, .switch-inline i { position: absolute; inset: 0; pointer-events: none; border-radius: 99px; background: var(--fill-1); transition: background var(--duration-normal); }
 .switch i::after, .switch-inline i::after {
   content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2), 0 0 0 0.5px rgba(0, 0, 0, 0.06); transition: transform var(--duration-normal) var(--ease-spring);
@@ -185,7 +185,7 @@ input[type='color']::-webkit-color-swatch { border: 0.5px solid var(--separator-
 .editor-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr var(--inspector-w); }
 .pane-switch { display: none; }
 .canvas { position: relative; min-width: 0; min-height: 0; background: var(--bg-desk); }
-.canvas-scroll { position: absolute; inset: 0; overflow: auto; padding: 32px 28px 88px; }
+.canvas-scroll { position: absolute; inset: 0; overflow: auto; padding: 32px 28px 88px; isolation: isolate; }
 .canvas-zoom { width: max-content; margin: 0 auto; }
 .canvas-host .sheet { box-shadow: var(--shadow-sheet); }
 .zoom-pill {

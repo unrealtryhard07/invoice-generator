@@ -102,6 +102,22 @@ test('dashboard converts to base currency, buckets ageing and ranks customers', 
   assert.equal(dash.topCustomers[0].name, 'Cura');
 });
 
+test('dashboard counts paid invoices that have no customer name, but leaves them out of top customers', () => {
+  const docs = [
+    makeDoc({ id: 'n', title: 'PROFORMA INVOICE', customer: { name: '' }, currency: { code: 'USD', decimals: 2 }, fx: { enabled: true, base: 'KWD', rate: 0.3115 },
+      items: [{ qty: 1, price: 100 }], meta: [{ key: 'invoiceDate', value: '2026-09-17' }], payments: [{ date: '2026-09-17', amount: 100 }] }),
+    makeDoc({ id: 'd', title: 'PROFORMA INVOICE', status: 'draft', customer: { name: '' }, items: [{ qty: 1, price: 0 }] }),
+  ];
+  const dash = ledger.dashboard(docs, { today: TODAY, base: 'KWD', from: '2026-01-01' });
+  assert.equal(dash.count, 1);
+  assert.equal(dash.kpis.invoiced, 31.15);
+  assert.equal(dash.kpis.collected, 31.15);
+  assert.equal(dash.kpis.outstanding, 0);
+  assert.equal(dash.monthly.at(-1).collected, 31.15);
+  assert.deepEqual(dash.topCustomers, []);
+  assert.equal(ledger.customers(docs, TODAY).length, 0);
+});
+
 test('builds QR payloads for summary, bank and custom modes', () => {
   const inv = makeDoc({
     title: 'TAX INVOICE', number: 'NB-9', company: { name: 'Nayef Bashar Trading Est.' }, payments: [{ amount: 250 }],

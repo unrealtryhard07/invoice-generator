@@ -46,11 +46,11 @@
     return due ? Math.max(0, daysBetween(due, today)) : 0;
   }
 
-  const isLedgerEntry = (inv, today) => {
-    const s = status(inv, today);
-    return !['draft', 'cancelled', 'converted'].includes(s) && !inv.appliedTo && documentKind(inv) !== 'quote'
-      && Boolean(customerKey(inv.customer && inv.customer.name));
-  };
+  // Issued invoices and credit notes that count towards receivables totals, named customer or not.
+  const countsInTotals = (inv, today) => !['draft', 'cancelled', 'converted'].includes(status(inv, today))
+    && !inv.appliedTo && documentKind(inv) !== 'quote';
+  // Statements and customer balances also need a customer name to group by.
+  const isLedgerEntry = (inv, today) => countsInTotals(inv, today) && Boolean(customerKey(inv.customer && inv.customer.name));
 
   // Linked credit notes settle their original invoice: add them as virtual payments, and take the
   // credit note itself out of the ledger so it is not counted twice. Never persist the result.
@@ -89,7 +89,7 @@
     let count = 0;
     const inPeriod = (date) => (!from || date >= from) && date <= today;
 
-    invoices.filter((inv) => isLedgerEntry(inv, today)).forEach((inv) => {
+    invoices.filter((inv) => countsInTotals(inv, today)).forEach((inv) => {
       const rate = inv.currency.code === base ? 1 : (inv.fx && inv.fx.base === base ? calc.toNum(inv.fx.rate) : 0);
       if (!rate) {
         unconverted += 1;
@@ -110,8 +110,8 @@
         if (inPeriod(paidOn)) kpis.collected += toBase(calc.toNum(p.amount));
       });
 
-      const key = customerKey(inv.customer.name);
-      const person = people.get(key) || { key, name: inv.customer.name.trim(), invoiced: 0, outstanding: 0 };
+      const key = customerKey(inv.customer && inv.customer.name);
+      const person = people.get(key) || { key, name: key ? inv.customer.name.trim() : '', invoiced: 0, outstanding: 0 };
       if (inPeriod(date)) person.invoiced += sign * toBase(t.total);
 
       if (sign > 0 && t.balance > 0) {
@@ -129,7 +129,7 @@
           kpis.cost += toBase(p.cost);
         }
       }
-      people.set(key, person);
+      if (key) people.set(key, person);
     });
 
     const r = (n) => calc.round(n, d);
@@ -239,6 +239,6 @@
 
   return {
     AGEING_BUCKETS, invoiceDate, dueDate, daysBetween, customerKey, documentKind, status, overdueDays,
-    isLedgerEntry, ageingBucket, customers, statement, prepare, dashboard,
+    countsInTotals, isLedgerEntry, ageingBucket, customers, statement, prepare, dashboard,
   };
 });
