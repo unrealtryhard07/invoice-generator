@@ -244,7 +244,7 @@
 
 /* ===== QR code ===== */
 .inv-qr {
-  position: absolute !important; z-index: 6 !important; left: calc(var(--sx) - var(--pofs, 0mm)); top: calc(var(--sy) - var(--pofs, 0mm));
+  position: absolute !important; z-index: 7 !important; left: calc(var(--sx) - var(--pofs, 0mm)); top: calc(var(--sy) - var(--pofs, 0mm));
   width: var(--ss); display: grid; justify-items: center; gap: 1mm; touch-action: none; background: #fff;
 }
 .inv-qr svg { display: block; width: 100%; height: auto; }
