@@ -2,7 +2,7 @@
 
 Start a new session with: **"Read ~/invoice-generator/HANDOVER.md and continue."**
 
-Last updated: 2026-09-17
+Last updated: 2026-09-19
 
 ---
 
@@ -19,11 +19,13 @@ A bilingual (English / Arabic) invoicing app for **Nayef Bashar Trading Est.** (
 
 ```bash
 open ~/invoice-generator/index.html                      # use the app
-cd ~/invoice-generator && node --test tests/*.test.js    # 21 tests, all passing
+cd ~/invoice-generator && node --test tests/*.test.js    # 38 unit tests, all passing
+cd ~/invoice-generator && node tests/e2e/smoke.mjs        # 38 end-to-end checks in headless Chrome (~1 min)
 ```
 
-- Tests cover the pure modules: `calc`, `words`, `words-ar`, `ledger`, `documents` (incl. QR payloads).
-- UI was verified with headless Chrome driven over the DevTools protocol (Node 25 WebSocket). Those scripts lived in the old session scratchpad and are not kept. Pattern: launch Chrome `--headless=new --remote-debugging-port=9333 --user-data-dir=<tmp>`, connect via `http://127.0.0.1:9333/json`, drive with `Runtime.evaluate` + `Input.dispatchMouseEvent`, capture with `Page.captureScreenshot` / `Page.printToPDF`, allow downloads with `Browser.setDownloadBehavior`.
+- Unit tests cover the pure modules (`calc`, `words`, `words-ar`, `ledger`, `documents`) and, via `tests/helpers/browser-env.js` (a `vm` sandbox with in-memory localStorage), `defaults` and `store`.
+- `tests/e2e/smoke.mjs` drives the real app over the DevTools protocol (`tests/e2e/cdp.mjs`, throwaway Chrome profile, never your data): every view, numbering, credit notes, payments, delete guards, paste, attachments, 375px layout, PDF online and offline. Artifacts go to `tests/e2e/.artifacts/` (gitignored). Set a field with an `input` event (plus `change` for selects) — the editor listens to `input`.
+- The project is a **git repo** since 2026-09-19 (baseline commit `a6a9d88` = the app before the audit fixes).
 - The Playwright MCP bridge is **not** installed. Headless Chrome CLI (`--screenshot`) writes files but the process doesn't exit on its own — kill it.
 
 ## 3. Architecture
@@ -62,13 +64,13 @@ CSS: `css/app.css` (macOS-style shell, light/dark), `css/views.css` (lists, dash
 
 ## 4. Data model & storage
 
-**localStorage keys (`nbinv.*`):** `invoices` (id → invoice), `brand` (defaults for new invoices), `clients`, `catalog`, `templates`, `settings` (`prefix, pattern, pad, next, baseCurrency`), `prefs` (zoom, tab, lastId, migratedDraft), `asset.logo`, `asset.stamp` (data URLs), legacy `draft`.
+**localStorage keys (`nbinv.*`):** `invoices` (id → invoice), `brand` (defaults for new invoices), `clients`, `catalog`, `templates`, `settings` (`prefix, pattern, pad, next, baseCurrency, backupFiles`), `prefs` (zoom, tab, lastId, migratedDraft), `asset.logo`, `asset.stamp` (data URLs), legacy `draft`.
 
 **IndexedDB `nb-invoice-files`:** `files{id, invoiceId, name, type, size, kind, addedAt, blob}`, `fonts{id, family, name, blob}`.
 
 **Invoice (main fields):**
 ```
-id, number, status ('draft'|'sent'|'cancelled'), title, titleAr, language ('en'|'ar'|'bi')
+id, number, docType, status ('draft'|'sent'|'cancelled'), title, titleAr, language ('en'|'ar'|'bi')
 company{name,nameAr,address,addressAr,contacts[],tagline,logo}, customer{name,nameAr,address,addressAr,contacts[]}
 meta[{label,labelAr,value,type,key}]          // key 'invoiceDate' / 'dueDate', dates ISO YYYY-MM-DD
 shipment[{label,labelAr,value,type,wide}], containers[{id,number,seal,size,packages,weight,volume}]
@@ -105,10 +107,19 @@ supersededBy / convertedFrom / creditFor (+ …Number), createdAt, updatedAt
 - **GateGuard hook (ECC plugin)** blocks the first Write/Edit of each file and the first Bash of a session until you state facts (callers, overlap, data, the user's instruction), then you retry. Destructive commands (`rm`) also require a rollback line.
 - **Cost:** the previous session was very expensive (about $450+ across this app and the website). The user chose phased delivery — propose scope and check in before large builds.
 
+### Audit fixes (2026-09-19)
+- **Numbering:** settings are always read from storage (never cached in `app.js`). `store.consumeNumber()` skips numbers already used; `releaseNumber()` hands back the number of a new document abandoned without content; the editor warns on a duplicate number; importing a single invoice with a used number renumbers it.
+- **Backups:** import keeps the newer copy of each document (by `updatedAt`) and never rewinds `settings.next`. Settings → Backup shows storage used (warning at 80%) and an "Include attachments and fonts" option (`settings.backupFiles`; files travel as data URLs via `blobs.exportAll/importAll`).
+- **Document type is stored** as `docType` (ids in `documents.DOC_TYPES`, plus `custom`). `defaults.mergeBrand/migrate` infer it once from the title for older data (`documents.inferDocType`); after that the title is free text. `ledger.documentKind` and `documents.typeOf` read `docType`.
+- **Money:** status `overpaid` (balance below zero); "Mark as fully paid" uses the balance after credit notes; "Record payment" starts empty; fixed discount capped at the subtotal; a credit note defaults to the open balance (single line when part-settled) and is refused when nothing is owed.
+- **Links:** converting keeps payment terms (due date shifts with the new issue date); `documents.deleteBlocker` stops deleting a converted copy whose original exists or an invoice with live credit notes.
+- **Other:** PDF falls back to local fonts offline (toast says so); HTML/SVG/XML attachments download instead of opening; IndexedDB transactions reject on abort; paste accepts `717,5` and keeps `|` inside descriptions; statements use the saved default design; phone layout has no sideways scroll; one-dinar Arabic wording is `دينار كويتي واحد`.
+- Found while testing: `ui.row/stack` gave controls that already had an `id` a second one, so "Paste Many Lines" never worked (`#bulk-items` was unreachable). `ui.labelled()` now reuses an existing id.
+
 ## 7. Known gaps / user to-dos
 
 - Company address, phone, email, website and **bank details are placeholders** (`Block __`, `+965 ____`). User fills them in, then Style → "Use this design and wording for new invoices".
-- **Arabic wording** written by Claude (customer name translation, charge names, terms) needs the user's review.
+- **Arabic wording** written by Claude (customer name translation, charge names, terms) needs the user's review. Amounts of exactly 2 still read "اثنان دينار" (the dual form "ديناران" would need a dual name per currency).
 - **JSON backups exclude attachments and uploaded fonts** (they live only in IndexedDB).
 - All data exists only in this browser — clearing site data deletes it.
 - Long shipment values wrap slightly in bilingual mode.

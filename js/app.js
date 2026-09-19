@@ -8,8 +8,8 @@
   const MAX_UPLOAD_BYTES = 1.5 * 1024 * 1024;
 
   let state = null;
-  let settings = null;
   let prefs = null;
+  let storageWarned = false;
   let saveTimer = null;
   let previewQueued = false;
   let cache = null;
@@ -75,7 +75,23 @@
       invalidate();
       updateEditorChrome('Saved');
       updateBadges();
+      warnIfStorageNearlyFull();
     });
+  }
+
+  function warnIfStorageNearlyFull() {
+    if (storageWarned) return;
+    const { ratio, nearlyFull } = store.usage();
+    if (!nearlyFull) return;
+    storageWarned = true;
+    ui.toast(`Browser storage is ${Math.round(ratio * 100)}% full. Export a backup and remove old documents (Settings → Backup).`, 'error');
+  }
+
+  // A new document that was never given any content is dropped, and its number handed back.
+  function discardIfAbandoned() {
+    if (!state || store.getInvoice(state.id) || hasContent(state)) return;
+    store.releaseNumber(state.number);
+    state = null;
   }
 
   /* ---------- preview & chrome ---------- */
@@ -119,9 +135,8 @@
     $('#nav-count-overdue').textContent = overdue || '';
   }
 
-  function brand() {
-    return state || defaults.newInvoice(store.loadBrand(), '');
-  }
+  // Statements always use the saved default design, not whichever invoice was opened last.
+  const brand = () => defaults.newInvoice(store.loadBrand(), '');
 
   /* ---------- routing ---------- */
   const VIEW_TITLES = { dashboard: 'Dashboard', invoices: 'Invoices', editor: 'Invoice', customers: 'Customers', charges: 'Saved Charges', settings: 'Settings' };
@@ -159,6 +174,7 @@
     $('#combo').hidden = true;
     const [, view = 'invoices', rawArg = ''] = location.hash.split('/');
     const arg = decodeURIComponent(rawArg);
+    if (!(view === 'invoice' && state && state.id === arg)) discardIfAbandoned();
     if (view === 'invoice') {
       if (openInvoice(arg)) show('editor');
       schedulePreview();
@@ -212,21 +228,47 @@
     }
   }
 
+  function restoreSummary({ count, kept }, files) {
+    const docs = `${count} document${count === 1 ? '' : 's'}`;
+    const newer = kept ? ` ${kept} newer document${kept === 1 ? ' was' : 's were'} kept as they are.` : '';
+    const attached = files ? ` ${files} attachment${files === 1 ? '' : 's'} and fonts restored.` : '';
+    return `Backup restored: ${docs}.${newer}${attached}`;
+  }
+
   async function importFile(file) {
     try {
-      const result = store.importAll(JSON.parse(await readFile(file, 'text')));
+      const data = JSON.parse(await readFile(file, 'text'));
+      const result = store.importAll(data);
       invalidate();
       if (result.kind === 'invoice') {
-        const inv = store.saveInvoice(defaults.migrate({ ...result.invoice, id: defaults.uid() }));
+        const incoming = defaults.migrate({ ...result.invoice, id: defaults.uid() });
+        const clash = store.numberTaken(incoming.number);
+        const inv = store.saveInvoice(clash ? { ...incoming, number: store.consumeNumber() } : incoming);
         invalidate();
         location.hash = `#/invoice/${encodeURIComponent(inv.id)}`;
-        ui.toast('Invoice imported.');
+        ui.toast(clash ? `Invoice imported as ${inv.number} — ${incoming.number} is already used.` : 'Invoice imported.');
       } else {
+        const files = await blobs.importAll(data).catch((err) => {
+          ui.toast(`Documents restored, but attachments could not be: ${err.message}`, 'error');
+          return 0;
+        });
+        if (files || (Array.isArray(data.fonts) && data.fonts.length)) await reloadFonts();
         route();
-        ui.toast(`Backup restored: ${result.count} document${result.count === 1 ? '' : 's'}.`);
+        ui.toast(restoreSummary(result, files));
       }
     } catch (err) {
       ui.toast(err instanceof SyntaxError ? 'That file is not valid JSON.' : err.message, 'error');
+    }
+  }
+
+  async function exportBackup() {
+    const withFiles = Boolean(store.loadSettings().backupFiles);
+    try {
+      const files = withFiles ? await blobs.exportAll() : {};
+      download(`nb-invoices-backup-${today()}.json`, { ...store.exportAll(), ...files });
+      ui.toast(withFiles ? `Backup saved with ${files.files.length} attachment${files.files.length === 1 ? '' : 's'}.` : 'Backup saved.');
+    } catch (err) {
+      ui.toast(`Backup failed: ${err.message}`, 'error');
     }
   }
 
@@ -262,8 +304,10 @@
     label.textContent = 'Preparing…';
     try {
       const filename = `${NB.pdf.safeFilename(state)}.pdf`;
-      await NB.pdf.downloadInvoice(state, filename);
-      ui.toast(`Saved “${filename}” to your Downloads.`);
+      const { fontsEmbedded } = await NB.pdf.downloadInvoice(state, filename);
+      ui.toast(fontsEmbedded
+        ? `Saved “${filename}” to your Downloads.`
+        : `Saved “${filename}”. You seem to be offline, so this computer's fonts were used — use Print / PDF for exact fonts.`);
     } catch (err) {
       ui.toast(err.message || 'PDF export failed. Use Print / PDF instead.', 'error');
     } finally {
@@ -291,13 +335,15 @@
     },
     'new-from': ({ id }) => {
       const template = id ? store.listTemplates().find((t) => t.id === id) : null;
+      discardIfAbandoned();
       state = defaults.newInvoice(store.loadBrand(), store.consumeNumber(), template);
       prefs = { ...prefs, tab: 'document' };
       location.hash = `#/invoice/${encodeURIComponent(state.id)}`;
     },
     convert: ({ target }) => {
       persist(true);
-      const { source, target: created } = documents.convert(state, target, { id: defaults.uid(), number: store.consumeNumber(), today: today() });
+      const openBalance = calc.computeTotals(prepared(state)).balance;
+      const { source, target: created } = documents.convert(state, target, { id: defaults.uid(), number: store.consumeNumber(), today: today(), openBalance });
       store.saveInvoice(source);
       state = store.saveInvoice(defaults.migrate(created));
       invalidate();
@@ -332,7 +378,13 @@
     },
     'list-delete': ({ id }) => {
       const inv = listInvoices().find((x) => x.id === id);
-      if (!inv || !ui.confirmTwice(`delete-${id}`, `Click delete again to permanently remove ${inv.number}.`)) return;
+      if (!inv) return;
+      const blocker = documents.deleteBlocker(inv, listInvoices());
+      if (blocker) {
+        ui.toast(blocker, 'error');
+        return;
+      }
+      if (!ui.confirmTwice(`delete-${id}`, `Click delete again to permanently remove ${inv.number}.`)) return;
       store.deleteInvoice(id);
       blobs.deleteFilesFor(id).catch(() => ui.toast('Invoice deleted, but its attachments could not be removed.', 'error'));
       if (state && state.id === id) state = null;
@@ -353,7 +405,7 @@
       store.resetBrand();
       ui.toast('Defaults reset. Existing invoices are unchanged.');
     },
-    'export-all': () => download(`nb-invoices-backup-${today()}.json`, store.exportAll()),
+    'export-all': () => exportBackup(),
     import: () => $('#import-file').click(),
     'upload-asset': uploadAsset,
     'client-save': () => {
@@ -446,7 +498,10 @@
       }
     });
     window.addEventListener('hashchange', route);
-    window.addEventListener('beforeunload', persist);
+    window.addEventListener('beforeunload', () => {
+      persist();
+      discardIfAbandoned();
+    });
     window.addEventListener('resize', () => {
       invoiceCanvas.applyZoom();
       statementCanvas.applyZoom();
@@ -455,9 +510,7 @@
 
   function boot() {
     prefs = store.loadPrefs();
-    settings = store.loadSettings();
     guard(migrateLegacyDraft);
-    settings = store.loadSettings();
     ui.bind(() => state || {});
 
     invoiceCanvas = NB.canvas.create($('#invoice-canvas'), {
@@ -486,7 +539,8 @@
       prefs: () => prefs,
       savePrefs: (patch) => { prefs = { ...prefs, ...patch }; guard(() => store.savePrefs(prefs)); },
     });
-    NB.dashboard.mount({ ledgerInvoices, today, settings: () => settings });
+    // Settings are always read from storage: numbering advances there, so a cached copy would go stale.
+    NB.dashboard.mount({ ledgerInvoices, today, settings: store.loadSettings });
     views.mount({
       listInvoices: ledgerInvoices,
       command,
@@ -495,8 +549,9 @@
       brand,
       statementCanvas,
       updatePageRule,
-      settings: () => settings,
-      setSetting: (key, value) => { settings = { ...settings, [key]: value }; guard(() => store.saveSettings(settings)); },
+      settings: store.loadSettings,
+      setSetting: (key, value) => guard(() => store.saveSettings({ ...store.loadSettings(), [key]: value })),
+      numberTaken: store.numberTaken,
     });
 
     bindShell();

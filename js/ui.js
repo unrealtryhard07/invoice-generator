@@ -19,7 +19,7 @@
   const icon = (name) => `<svg viewBox="0 0 16 16" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 
   const STATUS_LABELS = {
-    draft: 'Draft', unpaid: 'Unpaid', partial: 'Part paid', overdue: 'Overdue', paid: 'Paid', cancelled: 'Cancelled', issued: 'Issued', converted: 'Converted', credit: 'Credit note',
+    draft: 'Draft', unpaid: 'Unpaid', partial: 'Part paid', overdue: 'Overdue', paid: 'Paid', overpaid: 'Overpaid', cancelled: 'Cancelled', issued: 'Issued', converted: 'Converted', credit: 'Credit note',
   };
   const statusPill = (status) => `<span class="pill pill--${esc(status)}">${esc(STATUS_LABELS[status] || status)}</span>`;
 
@@ -51,20 +51,26 @@
   let uidCounter = 0;
   const nextId = () => `f${(uidCounter += 1)}`;
 
+  // Gives a control an id for its <label>, reusing one it already has (a second id attribute would be ignored).
+  function labelled(control) {
+    const existing = /^<(?:input|select|textarea)\b[^>]*?\sid="([^"]+)"/.exec(control);
+    if (existing) return { id: existing[1], html: control };
+    const id = nextId();
+    return { id, html: control.replace(/^<(input|select|textarea)/, `<$1 id="${id}"`) };
+  }
+
   // Label + control on one line, like System Settings.
   function row(label, control, { hint = '' } = {}) {
-    const id = nextId();
-    const labelled = control.replace(/^<(input|select|textarea)/, `<$1 id="${id}"`);
-    return `<div class="row"><label for="${id}">${esc(label)}</label><div class="row-control">${labelled}${hint}</div></div>`;
+    const { id, html } = labelled(control);
+    return `<div class="row"><label for="${id}">${esc(label)}</label><div class="row-control">${html}${hint}</div></div>`;
   }
   const rowToggle = (label, path, o) => {
     const id = nextId();
     return `<div class="row row--toggle"><label for="${id}">${esc(label)}</label>${switchEl(path, { ...o, id })}</div>`;
   };
   function stack(label, control) {
-    const id = nextId();
-    const labelled = control.replace(/^<(input|select|textarea)/, `<$1 id="${id}"`);
-    return `<div class="stack"><label for="${id}">${esc(label)}</label>${labelled}</div>`;
+    const { id, html } = labelled(control);
+    return `<div class="stack"><label for="${id}">${esc(label)}</label>${html}</div>`;
   }
   const group = (title, body, { foot = '', action = '' } = {}) => `<section class="group">
       ${title || action ? `<div class="group-head"><h3 class="group-title">${esc(title)}</h3>${action}</div>` : ''}

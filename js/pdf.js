@@ -91,12 +91,14 @@
       const sheet = host.querySelector('.sheet');
       await Promise.all([...sheet.querySelectorAll('img')].map((img) => img.decode().catch(() => undefined)));
       await document.fonts.ready;
-      const fontEmbedCSS = await fontCss(inv);
+      // Offline (Google Fonts unreachable): still produce the PDF, with the fonts this computer already has.
+      const fontEmbedCSS = await fontCss(inv).catch(() => null);
       const top = sheet.getBoundingClientRect().top;
       const breaks = [...new Set([...sheet.querySelectorAll(BREAK_AFTER)]
         .map((el) => Math.round(((el.getBoundingClientRect().bottom - top) / PX_PER_MM) * 10) / 10))].sort((a, b) => a - b);
-      const canvas = await window.htmlToImage.toCanvas(sheet, { pixelRatio: PIXEL_RATIO, backgroundColor: '#ffffff', fontEmbedCSS });
-      return { canvas, breaks };
+      // An empty fontEmbedCSS tells html-to-image not to fetch any font files itself.
+      const canvas = await window.htmlToImage.toCanvas(sheet, { pixelRatio: PIXEL_RATIO, backgroundColor: '#ffffff', fontEmbedCSS: fontEmbedCSS ?? '' });
+      return { canvas, breaks, fontsEmbedded: fontEmbedCSS !== null };
     } finally {
       host.remove();
     }
@@ -126,7 +128,7 @@
 
   async function downloadInvoice(inv, filename) {
     await Promise.all([loadScript(LIBS.image), loadScript(LIBS.pdf)]);
-    const { canvas, breaks } = await captureSheet(inv);
+    const { canvas, breaks, fontsEmbedded } = await captureSheet(inv);
     const [pageW] = PAGE_MM[inv.theme.paper] || PAGE_MM.A4;
     const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: inv.theme.paper === 'Letter' ? 'letter' : 'a4', compress: true });
     const slice = document.createElement('canvas');
@@ -144,6 +146,7 @@
 
     pdf.setProperties({ title: filename.replace(/\.pdf$/i, ''), subject: `${inv.title} ${inv.number}`, author: inv.company.name, creator: 'Invoice Studio' });
     pdf.save(filename);
+    return { fontsEmbedded };
   }
 
   const safeFilename = (inv) => `${[inv.title, inv.number].filter(Boolean).join(' ')}${inv.customer.name ? ` - ${inv.customer.name}` : ''}`

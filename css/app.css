@@ -301,7 +301,10 @@ textarea.field-input { height: auto; min-height: 40px; padding: 6px 8px; resize:
 @media (max-width: 1180px) { :root { --inspector-w: 340px; --sidebar-w: 200px; } .toolbar .btn[data-cmd='duplicate'] { display: none; } }
 @media (max-width: 900px) {
   body { overflow: auto; }
-  .window { grid-template-columns: 1fr; grid-template-rows: 1fr auto; height: 100dvh; }
+  /* minmax(0, 1fr): the bottom bar must shrink to the screen, never push the page wider than it. */
+  .window { grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr auto; height: 100dvh; }
+  .nav-list { min-width: 0; }
+  .nav-list a { min-width: 0; padding: 4px 2px; }
   .sidebar { order: 2; flex-direction: row; align-items: center; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); border: 0; border-top: 0.5px solid var(--separator-strong); }
   .sidebar-brand, .sidebar-foot { display: none; }
   .sidebar-new { order: 2; margin: 0; width: 34px; padding: 0; font-size: 0; }
@@ -311,7 +314,14 @@ textarea.field-input { height: auto; min-height: 40px; padding: 6px 8px; resize:
   .nav-list em { display: none; }
   .main { min-height: 0; overflow: hidden; }
   .toolbar { height: auto; min-height: var(--toolbar-h); flex-wrap: wrap; padding: 8px 12px; }
-  .toolbar-center { order: 3; flex-basis: 100%; overflow-x: auto; justify-content: flex-start; }
+  .toolbar-center { order: 3; flex-basis: 100%; overflow-x: auto; justify-content: flex-start; scrollbar-width: none; }
+  .toolbar-center::-webkit-scrollbar { display: none; }
+  /* Segmented controls scroll sideways rather than wrapping labels onto two clipped lines. */
+  .toolbar-center .seg { flex: none; }
+  .seg button { white-space: nowrap; flex: none; }
+  .seg--full button { flex: 1; }
+  /* Toasts sit above the bottom navigation bar. */
+  .hud { bottom: calc(88px + env(safe-area-inset-bottom)); }
   .search { width: 150px; }
   .switch-inline span { display: none; }
   .editor-body { display: flex; flex-direction: column; }

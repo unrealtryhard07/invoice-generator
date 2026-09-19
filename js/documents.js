@@ -12,8 +12,13 @@
     { id: 'commercial', title: 'COMMERCIAL INVOICE', titleAr: 'فاتورة تجارية', label: 'Commercial Invoice', next: ['credit'] },
     { id: 'invoice', title: 'INVOICE', titleAr: 'فاتورة', label: 'Invoice', next: ['credit'] },
     { id: 'credit', title: 'CREDIT NOTE', titleAr: 'إشعار دائن', label: 'Credit Note', next: [] },
+    { id: 'debit', title: 'DEBIT NOTE', titleAr: 'إشعار مدين', label: 'Debit Note', next: ['credit'] },
+    { id: 'delivery', title: 'DELIVERY NOTE', titleAr: 'إذن تسليم', label: 'Delivery Note', next: [] },
+    { id: 'receipt', title: 'RECEIPT', titleAr: 'إيصال استلام', label: 'Receipt', next: [] },
   ];
   const CUSTOM_TYPE = { id: 'custom', label: 'Document', next: ['credit'] };
+  const DAY_MS = 86400000;
+  const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
   const CONTAINER_SIZES = {
     '20GP': ['20 FT', '٢٠ قدم'], '40GP': ['40 FT', '٤٠ قدم'], '40HC': ['40 FT HIGH CUBE', '٤٠ قدم مرتفعة'], '45HC': ['45 FT HIGH CUBE', '٤٥ قدم مرتفعة'],
@@ -22,29 +27,81 @@
     LCL: ['LCL', 'شحنة جزئية'],
   };
 
-  const typeOf = (inv) => DOC_TYPES.find((t) => t.title === String(inv.title || '').trim().toUpperCase()) || CUSTOM_TYPE;
+  const titleKey = (title) => String(title || '').trim().replace(/\s+/g, ' ').toUpperCase();
+  const typeById = (id) => DOC_TYPES.find((t) => t.id === id);
+
+  /** The workflow type of a document: its stored `docType`, or (for unmigrated data) its exact title. */
+  const typeOf = (inv) => (inv.docType
+    ? typeById(inv.docType) || CUSTOM_TYPE
+    : DOC_TYPES.find((t) => t.title === titleKey(inv.title)) || CUSTOM_TYPE);
+
+  /**
+   * Picks a document type for a title once, when older data is migrated. Custom titles keep the meaning
+   * the old title-matching rules gave them, so existing totals do not change.
+   */
+  function inferDocType(title, titleAr = '') {
+    const exact = DOC_TYPES.find((t) => t.title === titleKey(title));
+    if (exact) return exact.id;
+    const text = `${title || ''} ${titleAr || ''}`;
+    if (/CREDIT NOTE|إشعار دائن/i.test(text)) return 'credit';
+    if (/QUOTATION|QUOTE|عرض سعر/i.test(text)) return 'quotation';
+    if (/DELIVERY NOTE|إذن تسليم/i.test(text)) return 'delivery';
+    if (/STATEMENT|كشف حساب/i.test(text)) return 'statement';
+    return 'custom';
+  }
 
   const omit = (obj, keys) => Object.fromEntries(Object.entries(obj).filter(([k]) => !keys.includes(k)));
   const LINK_KEYS = ['supersededBy', 'supersededByNumber', 'convertedFrom', 'convertedFromNumber', 'creditFor', 'creditForNumber'];
+  const isoDay = (iso) => Date.parse(`${iso}T00:00:00Z`);
+  const addDays = (iso, days) => new Date(isoDay(iso) + days * DAY_MS).toISOString().slice(0, 10);
 
-  /** Creates the next document in the workflow. Returns updated source and the new target document. */
-  function convert(source, targetId, { id, number, today }) {
-    const target = DOC_TYPES.find((t) => t.id === targetId);
+  // The new document keeps the same payment terms: due date moves with the new issue date.
+  function shiftedMeta(meta, today) {
+    const issued = (meta.find((f) => f.key === 'invoiceDate') || {}).value;
+    const due = (meta.find((f) => f.key === 'dueDate') || {}).value;
+    const termDays = ISO_DATE.test(issued) && ISO_DATE.test(due) ? Math.round((isoDay(due) - isoDay(issued)) / DAY_MS) : null;
+    return meta.map((f) => {
+      if (f.key === 'invoiceDate') return { ...f, value: today };
+      if (f.key === 'dueDate') return { ...f, value: termDays === null ? '' : addDays(today, Math.max(termDays, 0)) };
+      return f;
+    });
+  }
+
+  // When part of an invoice is already settled, the credit note is a single line for what is still owed.
+  function creditLines(source, openBalance) {
+    const d = calc.toNum(source.currency.decimals);
+    const balance = calc.round(openBalance, d);
+    if (balance <= 0) throw new Error(`${source.number || 'This invoice'} is already settled — there is nothing left to credit.`);
+    if (balance >= calc.computeTotals(source).total) return {};
+    const item = (source.items || [])[0] || {};
+    return {
+      items: [{ ...item, id: `${item.id || 'line'}-credit`, desc: `Credit against ${source.number} — outstanding balance`, descAr: `إشعار دائن عن الفاتورة ${source.number} — الرصيد المستحق`, uom: '', qty: 1, price: balance, cost: 0, discount: 0, tax: 0 }],
+      totals: { ...source.totals, discountValue: 0, taxRate: 0, charges: [], paid: 0 },
+    };
+  }
+
+  /**
+   * Creates the next document in the workflow. Returns updated source and the new target document.
+   * `openBalance` (credit notes only) is what the customer still owes after payments and earlier credits.
+   */
+  function convert(source, targetId, { id, number, today, openBalance }) {
+    const target = typeById(targetId);
     if (!target) throw new Error(`Unknown document type: ${targetId}`);
     if (!typeOf(source).next.includes(targetId)) throw new Error(`A ${typeOf(source).label} cannot become a ${target.label}.`);
     const now = new Date().toISOString();
     const base = {
       ...omit(structuredClone(source), [...LINK_KEYS, 'updatedAt']),
-      id, number, title: target.title, titleAr: target.titleAr, status: 'draft', createdAt: now, updatedAt: now,
-      meta: source.meta.map((f) => (f.key === 'invoiceDate' ? { ...f, value: today } : f)),
+      id, number, docType: target.id, title: target.title, titleAr: target.titleAr, status: 'draft', createdAt: now, updatedAt: now,
+      meta: shiftedMeta(source.meta || [], today),
     };
 
     if (targetId === 'credit') {
       const reference = { label: 'Original Invoice', labelAr: 'الفاتورة الأصلية', value: source.number };
+      const owed = openBalance === undefined ? calc.computeTotals(source).balance : openBalance;
       return {
         source,
         target: {
-          ...base, creditFor: source.id, creditForNumber: source.number, payments: [],
+          ...base, ...creditLines(source, owed), creditFor: source.id, creditForNumber: source.number, payments: [],
           meta: [...base.meta.filter((f) => f.key !== 'dueDate' && f.label !== reference.label), reference],
         },
       };
@@ -53,6 +110,23 @@
       source: { ...source, supersededBy: id, supersededByNumber: number, payments: [] },
       target: { ...base, convertedFrom: source.id, convertedFromNumber: source.number, payments: source.payments || [] },
     };
+  }
+
+  /**
+   * Why a document may not be deleted ('' when it may). Deleting a converted copy would strand its original
+   * as "Converted" and lose the payments that moved across; deleting an invoice would orphan its credit notes.
+   */
+  function deleteBlocker(inv, all) {
+    const live = (x) => x && x.id !== inv.id && x.status !== 'cancelled';
+    const source = inv.convertedFrom && all.find((x) => x.id === inv.convertedFrom && x.supersededBy === inv.id);
+    if (live(source)) {
+      return `${inv.number} was created from ${source.number}. Deleting it would leave ${source.number} stuck as Converted. Set its status to Cancelled instead.`;
+    }
+    const credits = all.filter((x) => live(x) && x.creditFor === inv.id);
+    if (credits.length) {
+      return `${inv.number} has credit note ${credits.map((c) => c.number).join(', ')}. Cancel or delete the credit note first.`;
+    }
+    return '';
   }
 
   /* ---------- containers (ISO 6346) ---------- */
@@ -153,5 +227,5 @@
     return `<svg viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges" role="img" aria-label="QR code"><rect width="${size}" height="${size}" fill="#fff"/><path fill="#000" d="${d}"/></svg>`;
   }
 
-  return { DOC_TYPES, CONTAINER_SIZES, typeOf, convert, checkContainer, containerSummary, equivalent, qrPayload, qrSvg };
+  return { DOC_TYPES, CONTAINER_SIZES, typeOf, inferDocType, convert, deleteBlocker, checkContainer, containerSummary, equivalent, qrPayload, qrSvg };
 });

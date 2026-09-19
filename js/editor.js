@@ -47,11 +47,13 @@
   const bilingual = (label, path, o = {}) => row(label, input(path, o)) + (showArabic() ? row(`${label} (Arabic)`, input(`${path}Ar`, { ...o, dir: 'rtl' })) : '');
   const bilingualText = (label, path, o = {}) => stack(label, textarea(path, o)) + (showArabic() ? stack(`${label} (Arabic)`, textarea(`${path}Ar`, { ...o, dir: 'rtl' })) : '');
 
+  const numberWarning = (number) => `${number} is already used by another document. Give this one a different number.`;
+
   /* ---------- Document tab ---------- */
   function tabDocument(inv) {
-    const titles = defaults.DOC_TITLES.map((t) => [t, t.charAt(0) + t.slice(1).toLowerCase()]);
-    const known = defaults.DOC_TITLES.includes(String(inv.title).toUpperCase());
-    const typeSelect = `<select data-cmd="doc-type" aria-label="Document type">${[...titles, ['', 'Custom…']].map(([v, l]) => `<option value="${esc(v)}"${(known ? String(inv.title).toUpperCase() === v : v === '') ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+    const types = [...documents.DOC_TYPES.map((t) => [t.id, t.label]), ['custom', 'Other (custom title)']];
+    const typeSelect = `<select data-cmd="doc-type" aria-label="Document type">${types.map(([v, l]) => `<option value="${esc(v)}"${v === documents.typeOf(inv).id ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+    const numberClash = store.numberTaken(inv.number, inv.id);
     const dateIndex = (key) => inv.meta.findIndex((f) => f.key === key);
     const dateRow = (label, key) => (dateIndex(key) >= 0 ? row(label, input(`meta.${dateIndex(key)}.value`, { type: 'date' })) : '');
     const clients = store.listClients();
@@ -87,7 +89,8 @@
       { foot: 'Converting copies everything into a new document and moves any payments across. The original is kept and marked Converted.' }),
       group('Document', `<div class="row"><label>Type</label><div class="row-control">${typeSelect}</div></div>`
         + bilingual('Title', 'title')
-        + row('Number', input('number'))
+        + row('Number', input('number', { aria: 'Document number' }))
+        + `<p class="field-warning" data-number-warning role="alert"${numberClash ? '' : ' hidden'}>${numberClash ? esc(numberWarning(inv.number)) : ''}</p>`
         + row('Status', select('status', [['draft', 'Draft'], ['sent', 'Sent'], ['cancelled', 'Cancelled']]))),
       group('Dates', dateRow('Invoice date', 'invoiceDate') + dateRow('Due date', 'dueDate')
         + `<div class="chips">${DUE_PRESETS.map(([d, l]) => `<button type="button" class="chip-btn" data-act="due" data-days="${d}">${esc(l)}</button>`).join('')}</div>`,
@@ -453,19 +456,36 @@
     ctx.set('meta', meta, true);
   }
 
+  // "Mark as fully paid" settles exactly the balance shown (after credit notes). "Record payment" starts
+  // empty so a document is never marked paid by accident.
   function addPayment(full) {
-    const { balance } = calc.computeTotals(s());
-    const payment = { id: defaults.uid(), date: ctx.today(), amount: Math.max(balance, 0), method: 'Bank Transfer', reference: '' };
+    const { balance } = calc.computeTotals(ctx.prepared(s()));
+    const amount = full ? Math.max(balance, 0) : '';
+    const payment = { id: defaults.uid(), date: ctx.today(), amount, method: 'Bank Transfer', reference: '' };
     ctx.update((cur) => ({ ...cur, status: cur.status === 'draft' ? 'sent' : cur.status, payments: [...cur.payments, payment] }), true);
-    ctx.toast(full ? 'Marked as paid.' : 'Payment added — adjust the amount if it was a part payment.');
+    ctx.toast(full ? 'Marked as paid.' : 'Payment added — enter the amount received.');
+    if (!full) {
+      const field = root.querySelector(`[data-path="payments.${s().payments.length - 1}.amount"]`);
+      if (field) field.focus();
+    }
   }
 
-  function parseBulk(text) {
-    return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line) => {
-      const sep = ['\t', '|', ';'].find((x) => line.includes(x));
-      const [desc, qty, price] = sep ? line.split(sep).map((x) => x.trim()) : [line];
-      return { ...defaults.blankItem(), desc, qty: qty === undefined ? 1 : calc.toNum(qty), price: calc.toNum(price) };
-    });
+  const parseBulk = (text) => calc.parseBulkLines(text).map((line) => ({ ...defaults.blankItem(), ...line }));
+
+  // Web pages and SVGs can run scripts, so they are saved to disk instead of opened inside the app.
+  const ACTIVE_CONTENT = /(^text\/html|^application\/xhtml|^image\/svg|xml$)|\.(x?html?|svgz?|xml|xht)$/i;
+  function openAttachment(file) {
+    const url = URL.createObjectURL(file.blob);
+    if (ACTIVE_CONTENT.test(file.type) || ACTIVE_CONTENT.test(file.name)) {
+      const a = Object.assign(document.createElement('a'), { href: url, download: file.name });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      ctx.toast(`${file.name} was saved to your Downloads — web pages are not opened inside the app.`);
+    } else {
+      window.open(url, '_blank', 'noopener');
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
   const ACTIONS = {
@@ -500,10 +520,7 @@
     'layout-reset': () => ctx.update((cur) => ({ ...cur, layout: [...defaults.DEFAULT_LAYOUT], columns: cur.columns.map(({ width, ...c }) => c) }), true),
     'file-open': async (d) => {
       const file = await blobs.getFile(d.id);
-      if (!file) return;
-      const url = URL.createObjectURL(file.blob);
-      window.open(url, '_blank', 'noopener');
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      if (file) openAttachment(file);
     },
     'file-delete': async (d) => {
       if (!ui.confirmTwice(`file-${d.id}`, 'Click delete again to remove this attachment.')) return;
@@ -544,6 +561,14 @@
     ctx.set(el.dataset.path, ui.readValue(el), el.hasAttribute('data-rerender'));
     if (el.type === 'color') ctx.set('theme.preset', 'Custom');
     if (/^(items|currency)\./.test(el.dataset.path)) refreshLineTotals();
+    if (el.dataset.path === 'number') {
+      const warning = root.querySelector('[data-number-warning]');
+      const clash = store.numberTaken(el.value, s().id);
+      if (warning) {
+        warning.hidden = !clash;
+        warning.textContent = clash ? numberWarning(el.value.trim()) : '';
+      }
+    }
     const containerMatch = /^containers\.(\d+)\.number$/.exec(el.dataset.path);
     if (containerMatch) {
       const badge = root.querySelector(`[data-container-check="${containerMatch[1]}"]`);
@@ -586,7 +611,9 @@
       return;
     }
     if (el.dataset.cmd === 'doc-type' && el.value) {
-      ctx.update((cur) => ({ ...cur, title: el.value, titleAr: defaults.TITLES[el.value] || cur.titleAr }), true);
+      // The type drives receivables and the workflow; the title stays free text.
+      const type = documents.DOC_TYPES.find((t) => t.id === el.value);
+      ctx.update((cur) => (type ? { ...cur, docType: type.id, title: type.title, titleAr: type.titleAr } : { ...cur, docType: 'custom' }), true);
     } else if (el.dataset.cmd === 'currency') {
       ctx.set('currency', { ...defaults.CURRENCIES[el.value] }, true);
     } else if (el.dataset.cmd === 'client' && el.value) {

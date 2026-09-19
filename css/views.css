@@ -171,13 +171,25 @@
 .file-name span { font-size: var(--text-xs); color: var(--label-2); }
 .pill--converted { color: var(--label-2); }
 .pill--credit { color: #8944ab; background: rgba(137, 68, 171, 0.12); }
+/* Paid, but more than was owed: money to refund or carry forward — worth a second look. */
+.pill--overpaid { color: var(--orange); background: color-mix(in srgb, var(--orange) 13%, transparent); }
+.field-warning { margin: 0; padding: 8px 14px; font-size: var(--text-xs); font-weight: 500; color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
+.field-warning[hidden] { display: none; }
+.storage-row .row-control { display: flex; align-items: center; gap: 10px; }
+.meter { position: relative; display: block; width: 120px; height: 6px; border-radius: 99px; background: var(--fill-2); overflow: hidden; }
+.meter i { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--accent); }
+.storage-row.is-alert .meter i { background: var(--red); }
 .pill-divider { width: 0.5px; height: 16px; background: var(--separator-strong); margin: 0 2px; }
 .zoom-pill .arrange-btn { padding: 0 10px; font-size: var(--text-sm); }
 .zoom-pill .arrange-btn[aria-pressed='true'] { background: var(--accent); color: #fff; }
 
 @media (max-width: 1100px) { .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 900px) {
-  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .kpi { padding: 12px 14px; }
+  /* Figures shrink to fit instead of being cut off; the currency moves under the number. */
+  .kpi-value { font-size: clamp(17px, 5.2vw, 24px); overflow: visible; }
+  .kpi-value small { display: block; margin-inline-start: 0; }
   .cards, .template-grid { grid-template-columns: 1fr; }
   .view-body--dashboard { padding: 12px; }
   .item-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }

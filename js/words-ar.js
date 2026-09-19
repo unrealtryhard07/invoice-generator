@@ -52,22 +52,27 @@
     return groups.join(' و');
   }
 
+  // Arabic puts "one" after the counted noun: "دينار كويتي واحد", not "واحد دينار كويتي".
+  const spelled = (n, name) => (n === 1 && name ? { words: `${name} واحد`, name: '' } : { words: integerToWords(n), name });
+
   function amountToWords(amount, currency, options = {}) {
     const decimals = Math.max(0, Math.floor(Number(currency.decimals) || 0));
     const factor = 10 ** decimals;
     const totalMinor = Math.round(Number(`${Math.abs(Number(amount) || 0)}e${decimals}`));
     const major = Math.floor(totalMinor / factor);
     const minor = totalMinor % factor;
+    const minorName = spelled(minor, currency.minorAr || '');
+    const majorName = spelled(major, currency.majorAr || '');
     const minorPart = minor > 0
       ? (options.minorTemplate ?? DEFAULT_MINOR_TEMPLATE)
-        .replace('{MINOR_WORDS}', integerToWords(minor))
-        .replace('{MINOR_NAME}', currency.minorAr || '')
+        .replace('{MINOR_WORDS}', minorName.words)
+        .replace('{MINOR_NAME}', minorName.name)
         .replace('{MINOR_NUMBER}', String(minor))
       : '';
     const text = (options.template || DEFAULT_TEMPLATE)
-      .replace('{MAJOR_NAME}', currency.majorAr || '')
+      .replace('{MAJOR_NAME}', majorName.name)
       .replace('{CODE}', currency.code || '')
-      .replace('{MAJOR_WORDS}', integerToWords(major))
+      .replace('{MAJOR_WORDS}', majorName.words)
       .replace('{MINOR_PART}', minorPart)
       .replace(/\s+/g, ' ')
       .trim();

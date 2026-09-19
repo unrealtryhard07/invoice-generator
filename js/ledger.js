@@ -20,7 +20,12 @@
   const customerKey = (name) => String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
   const decimalsOf = (inv) => calc.toNum(inv.currency && inv.currency.decimals);
 
+  // Stored document types that are not receivables (quote) or reduce them (credit). Everything else is an invoice.
+  const KIND_BY_TYPE = { quotation: 'quote', delivery: 'quote', statement: 'quote', credit: 'credit' };
+
   function documentKind(inv) {
+    if (inv.docType) return KIND_BY_TYPE[inv.docType] || 'invoice';
+    // Legacy fallback for documents saved before `docType` existed (migration assigns it on load).
     const title = `${inv.title || ''} ${inv.titleAr || ''}`;
     if (/QUOTATION|QUOTE|DELIVERY NOTE|STATEMENT|عرض سعر|إذن تسليم|كشف حساب/i.test(title)) return 'quote';
     if (/CREDIT NOTE|إشعار دائن/i.test(title)) return 'credit';
@@ -32,7 +37,8 @@
     if (inv.supersededBy) return 'converted';
     if (documentKind(inv) === 'credit') return inv.status === 'draft' ? 'draft' : 'credit';
     const t = calc.computeTotals(inv);
-    if (t.paid > 0 && t.balance <= 0) return 'paid';
+    if (t.paid > 0 && t.balance < 0) return 'overpaid';
+    if (t.paid > 0 && t.balance === 0) return 'paid';
     if (inv.status === 'draft' && t.paid <= 0) return 'draft';
     if (documentKind(inv) === 'quote') return 'issued';
     const due = dueDate(inv);

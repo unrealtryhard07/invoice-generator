@@ -41,9 +41,10 @@
     const lines = invoice.items.map((item) => lineAmounts(item, d));
     const subtotal = round(sum(lines, (l) => l.net), d);
     const lineTax = round(sum(lines, (l) => l.tax), d);
+    // A fixed discount can never exceed the subtotal (that would print a negative total).
     const discount = t.discountType === 'percent'
       ? round(subtotal * percent(t.discountValue) / 100, d)
-      : round(t.discountValue, d);
+      : round(Math.min(Math.max(toNum(t.discountValue), 0), Math.max(subtotal, 0)), d);
     const tax = round((subtotal - discount) * percent(t.taxRate) / 100, d);
     const charges = (t.charges || []).map((c) => ({ label: c.label, amount: round(c.amount, d) }));
     const total = round(subtotal - discount + lineTax + tax + sum(charges, (c) => c.amount), d);
@@ -88,5 +89,50 @@
     };
   }
 
-  return { toNum, round, lineAmounts, computeTotals, profit, formatNumber, formatDate };
+  /**
+   * Reads a pasted amount written with either decimal convention: "717,5" → 717.5, "1,000" → 1000,
+   * "1.234,5" → 1234.5. A lone comma followed by exactly three digits is read as a thousands separator.
+   */
+  function parseAmount(text) {
+    const s = String(text ?? '').replace(/[^\d.,-]/g, '');
+    if (!/\d/.test(s)) return 0;
+    const lastDot = s.lastIndexOf('.');
+    const lastComma = s.lastIndexOf(',');
+    let normal;
+    if (lastDot >= 0 && lastComma >= 0) {
+      const decimalSep = lastDot > lastComma ? '.' : ',';
+      const groupSep = decimalSep === '.' ? ',' : '.';
+      normal = s.split(groupSep).join('').replace(decimalSep, '.');
+    } else if (lastComma >= 0) {
+      const commas = s.split(',').length - 1;
+      normal = commas === 1 && s.length - lastComma - 1 !== 3 ? s.replace(',', '.') : s.replace(/,/g, '');
+    } else {
+      normal = (s.split('.').length - 1) > 1 ? s.replace(/\./g, '') : s;
+    }
+    const n = parseFloat(normal);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  const BULK_SEPARATORS = ['\t', '|', ';'];
+  const looksNumeric = (part) => /\d/.test(part) && !/\p{L}/u.test(part);
+
+  /** Splits pasted rows ("Description | Qty | Price", tab- or ;-separated) into line items. */
+  function parseBulkLines(text) {
+    return String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line) => {
+      const sep = BULK_SEPARATORS.find((x) => line.includes(x));
+      if (!sep) return { desc: line, qty: 1, price: 0 };
+      const parts = line.split(sep).map((x) => x.trim());
+      let numeric = 0;
+      while (numeric < 2 && parts.length - numeric > 1 && looksNumeric(parts[parts.length - 1 - numeric])) numeric += 1;
+      const numbers = parts.slice(parts.length - numeric);
+      const joiner = sep === '\t' ? ' ' : ` ${sep} `.replace(' ; ', '; ');
+      return {
+        desc: parts.slice(0, parts.length - numeric).join(joiner),
+        qty: numbers.length ? parseAmount(numbers[0]) : 1,
+        price: numbers.length > 1 ? parseAmount(numbers[1]) : 0,
+      };
+    });
+  }
+
+  return { toNum, round, lineAmounts, computeTotals, profit, formatNumber, formatDate, parseAmount, parseBulkLines };
 });

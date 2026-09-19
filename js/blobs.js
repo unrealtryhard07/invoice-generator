@@ -32,9 +32,12 @@
     return new Promise((resolve, reject) => {
       const tx = database.transaction(storeName, mode);
       const request = action(tx.objectStore(storeName));
-      tx.oncomplete = () => resolve(request ? request.result : undefined);
-      tx.onerror = () => reject(new BlobStoreError(tx.error && tx.error.name === 'QuotaExceededError'
+      const fail = () => reject(new BlobStoreError(tx.error && tx.error.name === 'QuotaExceededError'
         ? 'Storage is full. Delete some attachments first.' : 'File storage failed.'));
+      tx.oncomplete = () => resolve(request ? request.result : undefined);
+      tx.onerror = fail;
+      // A full disk aborts the transaction without an error event; without this the promise never settles.
+      tx.onabort = fail;
     });
   }
 
@@ -89,8 +92,48 @@
     return fonts.filter((_, i) => results[i].status === 'fulfilled').map((f) => f.family);
   }
 
+  /* ---------- backup ---------- */
+  const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new BlobStoreError('Could not read a stored file.'));
+    reader.readAsDataURL(blob);
+  });
+
+  function dataUrlToBlob(dataUrl, type) {
+    const match = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(String(dataUrl || ''));
+    if (!match) throw new BlobStoreError('A file in the backup is damaged.');
+    const raw = match[2] ? atob(match[3]) : decodeURIComponent(match[3]);
+    const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0));
+    return new Blob([bytes], { type: type || match[1] || 'application/octet-stream' });
+  }
+
+  const withData = async ({ blob, ...record }) => ({ ...record, data: await blobToDataUrl(blob) });
+
+  /** Attachments and fonts as data URLs, for an all-in-one JSON backup. */
+  async function exportAll() {
+    const [files, fonts] = await Promise.all([run('files', 'readonly', (s) => s.getAll()), listFonts()]);
+    return { files: await Promise.all((files || []).map(withData)), fonts: await Promise.all(fonts.map(withData)) };
+  }
+
+  /** Restores attachments and fonts from a backup, skipping any already stored. Returns the number of files added. */
+  async function importAll(data) {
+    const files = Array.isArray(data && data.files) ? data.files : [];
+    const fonts = Array.isArray(data && data.fonts) ? data.fonts : [];
+    if (!files.length && !fonts.length) return 0;
+    const restore = async (storeName, list) => {
+      const existing = new Set(((await run(storeName, 'readonly', (s) => s.getAllKeys())) || []).map(String));
+      const fresh = list.filter((r) => r && r.id && !existing.has(String(r.id)) && r.data);
+      await Promise.all(fresh.map(({ data: url, ...record }) => run(storeName, 'readwrite', (s) => s.put({ ...record, blob: dataUrlToBlob(url, record.type) }))));
+      return fresh.length;
+    };
+    const added = await restore('files', files);
+    await restore('fonts', fonts);
+    return added;
+  }
+
   NB.blobs = {
     BlobStoreError, ATTACHMENT_KINDS, addFile, listFiles, getFile, updateFile, deleteFile, deleteFilesFor,
-    addFont, listFonts, deleteFont, loadFonts,
+    addFont, listFonts, deleteFont, loadFonts, exportAll, importAll,
   };
 })(window.NB = window.NB || {});

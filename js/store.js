@@ -6,7 +6,10 @@
     draft: 'nbinv.draft', invoices: 'nbinv.invoices', brand: 'nbinv.brand', clients: 'nbinv.clients',
     settings: 'nbinv.settings', prefs: 'nbinv.prefs', catalog: 'nbinv.catalog', templates: 'nbinv.templates', asset: (name) => `nbinv.asset.${name}`,
   };
-  const DEFAULT_SETTINGS = { prefix: 'NB', pattern: '{PREFIX}-{YYYY}-{SEQ}', pad: 4, next: 1, baseCurrency: 'KWD' };
+  const DEFAULT_SETTINGS = { prefix: 'NB', pattern: '{PREFIX}-{YYYY}-{SEQ}', pad: 4, next: 1, baseCurrency: 'KWD', backupFiles: false };
+  // Browsers allow about 5 million characters of localStorage per site.
+  const QUOTA_CHARS = 5 * 1024 * 1024;
+  const WARN_RATIO = 0.8;
   const MAX_ASSET_BYTES = 1.5 * 1024 * 1024;
 
   class StorageError extends Error {}
@@ -63,11 +66,30 @@
       .replace('{SEQ}', String(Math.max(1, Math.floor(Number(seq) || 1))).padStart(Number(settings.pad) || 1, '0'));
   }
 
+  const numberKey = (number) => String(number ?? '').trim().toLowerCase();
+
+  /** True when another saved document already carries this number. */
+  function numberTaken(number, exceptId = null) {
+    const key = numberKey(number);
+    return Boolean(key) && Object.values(invoiceMap()).some((inv) => inv.id !== exceptId && numberKey(inv.number) === key);
+  }
+
+  /** Issues the next document number, skipping any number a saved document already uses. */
   function consumeNumber() {
     const settings = loadSettings();
-    const number = formatDocNumber(settings);
-    saveSettings({ ...settings, next: (Math.floor(Number(settings.next)) || 1) + 1 });
-    return number;
+    let seq = Math.max(1, Math.floor(Number(settings.next)) || 1);
+    while (numberTaken(formatDocNumber(settings, seq))) seq += 1;
+    saveSettings({ ...settings, next: seq + 1 });
+    return formatDocNumber(settings, seq);
+  }
+
+  /** Returns the most recently issued number when its document was abandoned before being saved. */
+  function releaseNumber(number) {
+    const settings = loadSettings();
+    const last = (Math.floor(Number(settings.next)) || 1) - 1;
+    if (last < 1 || formatDocNumber(settings, last) !== number || numberTaken(number)) return false;
+    saveSettings({ ...settings, next: last });
+    return true;
   }
 
   const listClients = () => read(KEY.clients, []);
@@ -118,25 +140,52 @@
     };
   }
 
+  const isNewer = (a, b) => String(a.updatedAt || '') > String(b.updatedAt || '');
+
+  // Restoring never replaces a document with an older copy of itself.
+  function mergeInvoices(incoming) {
+    const local = invoiceMap();
+    const entries = Object.entries(incoming || {}).filter(([, inv]) => inv && typeof inv === 'object');
+    const taken = entries.filter(([id, inv]) => !local[id] || !isNewer(local[id], inv));
+    write(KEY.invoices, { ...local, ...Object.fromEntries(taken) });
+    return { count: taken.length, kept: entries.length - taken.length };
+  }
+
   function importAll(data) {
     if (!data || typeof data !== 'object') throw new StorageError('This file is not a valid backup.');
     if (data.app === 'nb-invoice-studio') {
-      write(KEY.invoices, { ...invoiceMap(), ...(data.invoices || {}) });
+      const { count, kept } = mergeInvoices(data.invoices);
       if (data.brand) write(KEY.brand, data.brand);
       if (Array.isArray(data.clients)) write(KEY.clients, data.clients);
       if (Array.isArray(data.catalog)) saveCatalog(data.catalog);
       if (Array.isArray(data.templates)) write(KEY.templates, data.templates);
-      if (data.settings) saveSettings({ ...DEFAULT_SETTINGS, ...data.settings });
+      if (data.settings && typeof data.settings === 'object') {
+        // Numbering only ever moves forward, so a restored backup cannot re-issue numbers already used.
+        const current = loadSettings();
+        const next = Math.max(Math.floor(Number(current.next)) || 1, Math.floor(Number(data.settings.next)) || 1);
+        saveSettings({ ...DEFAULT_SETTINGS, ...current, ...data.settings, next });
+      }
       Object.entries(data.assets || {}).forEach(([name, url]) => { if (typeof url === 'string') setAsset(name, url); });
-      return { kind: 'backup', count: Object.keys(data.invoices || {}).length };
+      return { kind: 'backup', count, kept };
     }
     if (Array.isArray(data.items) && data.currency && data.theme) return { kind: 'invoice', invoice: data };
     throw new StorageError('Unrecognised file. Import a backup or a single exported invoice.');
   }
 
+  /** Characters this app keeps in localStorage, against the browser's per-site budget. */
+  function usage() {
+    let chars = 0;
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('nbinv.')) chars += key.length + String(localStorage.getItem(key) || '').length;
+    }
+    const ratio = chars / QUOTA_CHARS;
+    return { chars, quota: QUOTA_CHARS, ratio, nearlyFull: ratio >= WARN_RATIO };
+  }
+
   NB.store = {
-    StorageError, loadDraft, saveDraft, listInvoices, getInvoice, saveInvoice, deleteInvoice,
-    loadBrand, saveBrand, resetBrand, loadSettings, saveSettings, formatDocNumber, consumeNumber,
+    StorageError, QUOTA_CHARS, usage, loadDraft, saveDraft, listInvoices, getInvoice, saveInvoice, deleteInvoice,
+    loadBrand, saveBrand, resetBrand, loadSettings, saveSettings, formatDocNumber, consumeNumber, releaseNumber, numberTaken,
     listClients, saveClient, deleteClient, listCatalog, saveCatalog, upsertCatalogItem, listTemplates, saveTemplate, deleteTemplate, getAsset, setAsset, removeAsset, loadPrefs, savePrefs, exportAll, importAll,
   };
 })(window.NB = window.NB || {});

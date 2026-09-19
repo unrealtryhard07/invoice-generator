@@ -22,7 +22,6 @@
     INVOICE: 'فاتورة', QUOTATION: 'عرض سعر', 'CREDIT NOTE': 'إشعار دائن', 'DEBIT NOTE': 'إشعار مدين',
     'DELIVERY NOTE': 'إذن تسليم', RECEIPT: 'إيصال استلام',
   };
-  const DOC_TITLES = Object.keys(TITLES);
 
   const AR_LABELS = {
     'Invoice No.': 'رقم الفاتورة', 'Invoice Date': 'تاريخ الفاتورة', 'Due Date': 'تاريخ الاستحقاق',
@@ -91,13 +90,13 @@
   ].map(([key, label, visible]) => ({ key, label, labelAr: arabicFor(label), visible }));
 
   // Everything that carries over from one invoice to the next.
-  const BRAND_KEYS = ['title', 'titleAr', 'language', 'company', 'theme', 'sections', 'columns', 'currency', 'words', 'footer', 'bank',
+  const BRAND_KEYS = ['docType', 'title', 'titleAr', 'language', 'company', 'theme', 'sections', 'columns', 'currency', 'words', 'footer', 'bank',
     'numberLabel', 'numberLabelAr', 'customerHeading', 'customerHeadingAr', 'shipmentTitle', 'shipmentTitleAr', 'meta', 'shipment', 'totals', 'stamp', 'layout', 'fx', 'qr'];
   const NESTED_KEYS = ['company', 'totals', 'currency', 'words', 'footer', 'sections', 'theme', 'stamp', 'fx', 'qr'];
 
   function defaultBrand() {
     return {
-      title: 'PROFORMA INVOICE', titleAr: TITLES['PROFORMA INVOICE'], language: 'bi',
+      docType: 'proforma', title: 'PROFORMA INVOICE', titleAr: TITLES['PROFORMA INVOICE'], language: 'bi',
       numberLabel: 'Invoice No.', numberLabelAr: arabicFor('Invoice No.'),
       customerHeading: 'Bill To', customerHeadingAr: 'العميل',
       shipmentTitle: 'Shipment Details', shipmentTitleAr: 'تفاصيل الشحنة',
@@ -158,6 +157,8 @@
     if (!saved) return base;
     const merged = { ...base, ...saved };
     NESTED_KEYS.forEach((key) => { merged[key] = { ...base[key], ...(saved[key] || {}) }; });
+    // Data saved before document types were stored: derive the type from the title once.
+    if (!saved.docType) merged.docType = NB.documents.inferDocType(merged.title, merged.titleAr);
     if (merged.theme.preset === 'Navy & Gold') {
       merged.theme = { ...merged.theme, ...THEME_PRESETS['Navy & Black'], preset: 'Navy & Black' };
     }
@@ -215,21 +216,21 @@
   const columnsShowing = (keys) => DEFAULT_COLUMNS.map((c) => ({ ...c, visible: keys.includes(c.key) }));
   const TEMPLATES = [
     { id: 'tpl-freight', builtIn: true, name: 'Freight Proforma', description: 'Shipment details, container table and port charges.',
-      data: { title: 'PROFORMA INVOICE', titleAr: TITLES['PROFORMA INVOICE'], sections: { shipment: true, containers: true, printed: true } } },
+      data: { docType: 'proforma', title: 'PROFORMA INVOICE', titleAr: TITLES['PROFORMA INVOICE'], sections: { shipment: true, containers: true, printed: true } } },
     { id: 'tpl-commission', builtIn: true, name: 'Commission Invoice', description: 'Agent commission: principal, period and a simple amount table.',
       data: {
-        title: 'INVOICE', titleAr: TITLES.INVOICE, sections: { shipment: false, containers: false },
+        docType: 'invoice', title: 'INVOICE', titleAr: TITLES.INVOICE, sections: { shipment: false, containers: false },
         meta: metaFields([kv('Principal', '', { labelAr: 'الموكل' }), kv('Commission Period', '', { labelAr: 'فترة العمولة' }), kv('Your Reference')]),
         columns: columnsShowing(['no', 'desc', 'amount']),
       } },
     { id: 'tpl-simple', builtIn: true, name: 'Simple Invoice', description: 'A clean one-page invoice without shipping fields.',
       data: {
-        title: 'INVOICE', titleAr: TITLES.INVOICE, sections: { shipment: false, containers: false, printed: false },
+        docType: 'invoice', title: 'INVOICE', titleAr: TITLES.INVOICE, sections: { shipment: false, containers: false, printed: false },
         meta: metaFields([kv('Your Reference')]), theme: { headerLayout: 'centered', titleStyle: 'underline', tableStyle: 'minimal' },
       } },
     { id: 'tpl-quotation', builtIn: true, name: 'Quotation', description: 'Price offer with a validity date — convert it to a proforma later.',
       data: {
-        title: 'QUOTATION', titleAr: TITLES.QUOTATION, sections: { shipment: true, containers: false, payments: false },
+        docType: 'quotation', title: 'QUOTATION', titleAr: TITLES.QUOTATION, sections: { shipment: true, containers: false, payments: false },
         meta: [kv('Quotation Date', '', { type: 'date', key: 'invoiceDate', labelAr: 'تاريخ العرض' }), kv('Valid Until', '', { type: 'date', key: 'dueDate', labelAr: 'صالح حتى' }), kv('Your Reference'), kv('Our Contact Person')],
       } },
   ];
@@ -237,7 +238,8 @@
   /** Applies a template's design and structure; keeps the document's own content (customer, items, payments). */
   function applyTemplate(target, template) {
     const data = template.data || {};
-    const merged = { ...target, ...data };
+    const docType = data.docType || (data.title ? NB.documents.inferDocType(data.title, data.titleAr) : target.docType);
+    const merged = { ...target, ...data, docType };
     NESTED_KEYS.forEach((key) => { if (data[key]) merged[key] = { ...target[key], ...data[key] }; });
     if (data.meta) {
       const valueFor = (f) => (target.meta.find((m) => (f.key && m.key === f.key) || m.label === f.label) || {}).value ?? f.value;
@@ -304,7 +306,7 @@
   }
 
   NB.defaults = {
-    CURRENCIES, TITLES, DOC_TITLES, AR_LABELS, THEME_PRESETS, FONTS, AR_FONTS, PAYMENT_METHODS, CATALOG_SEED, DEFAULT_COLUMNS,
+    CURRENCIES, TITLES, AR_LABELS, THEME_PRESETS, FONTS, AR_FONTS, PAYMENT_METHODS, CATALOG_SEED, DEFAULT_COLUMNS,
     LAYOUT_BLOCKS, DEFAULT_LAYOUT, TEMPLATES, normalizeLayout, applyTemplate, templateFromInvoice, blankContainer,
     uid, today, addDays, kv, arabicFor, blankItem, defaultBrand, mergeBrand, migrate, brandFromInvoice, newInvoice, sampleInvoice,
   };

@@ -11,7 +11,7 @@
     draft: (status) => status === 'draft',
     open: (status) => ['unpaid', 'partial', 'overdue'].includes(status),
     overdue: (status) => status === 'overdue',
-    paid: (status) => status === 'paid',
+    paid: (status) => status === 'paid' || status === 'overpaid',
   };
 
   let ctx = null;
@@ -168,9 +168,20 @@
       { foot: 'Pattern tokens: <code>{PREFIX}</code> <code>{YYYY}</code> <code>{YY}</code> <code>{MM}</code> <code>{SEQ}</code>' }),
       ui.group('Design Defaults', '<button type="button" class="add-row" data-cmd="reset-brand">Reset new-invoice design to factory defaults</button>',
         { foot: 'To change the defaults, open any invoice → Style → “Use this design and wording for new invoices”.' }),
-      ui.group('Backup', '<button type="button" class="add-row" data-cmd="export-all">Export everything…</button><button type="button" class="add-row" data-cmd="import">Import backup…</button>',
-        { foot: `${count} document${count === 1 ? '' : 's'} stored in this browser only. Export a backup regularly — clearing browser data deletes them.` }),
+      ui.group('Backup', `${storageMeter()}
+          <div class="row row--toggle"><label for="set-backupFiles">Include attachments and fonts</label><span class="switch"><input type="checkbox" role="switch" id="set-backupFiles" data-setting="backupFiles"${settings.backupFiles ? ' checked' : ''}><i aria-hidden="true"></i></span></div>
+          <button type="button" class="add-row" data-cmd="export-all">Export everything…</button><button type="button" class="add-row" data-cmd="import">Import backup…</button>`,
+      { foot: `${count} document${count === 1 ? '' : 's'} stored in this browser only. Export a backup regularly — clearing browser data deletes them. Including attachments can make the backup file much larger.` }),
     ].join('');
+  }
+
+  function storageMeter() {
+    const { chars, quota, ratio, nearlyFull: warn } = store.usage();
+    const pct = Math.min(100, Math.round(ratio * 100));
+    const mb = (n) => (n / (1024 * 1024)).toFixed(n < 1024 * 1024 ? 2 : 1);
+    return `<div class="row storage-row${warn ? ' is-alert' : ''}"><span class="row-label">Storage used</span>
+      <div class="row-control"><span class="meter" role="meter" aria-label="Browser storage used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></span>
+      <span class="sub">${mb(chars)} of ~${mb(quota)} MB · ${pct}%</span></div></div>${warn ? '<p class="field-warning" role="alert">Storage is nearly full. Export a backup, then delete documents you no longer need.</p>' : ''}`;
   }
 
   function onSettingInput(e) {
@@ -182,7 +193,9 @@
     }
     const el = e.target.closest('[data-setting]');
     if (!el) return;
-    ctx.setSetting(el.dataset.setting, el.type === 'number' ? calc.toNum(el.value) : el.value);
+    const value = el.type === 'checkbox' ? el.checked : el.type === 'number' ? calc.toNum(el.value) : el.value;
+    if (el.type === 'checkbox' && e.type === 'input') return; // handled once, on change
+    ctx.setSetting(el.dataset.setting, value);
     const preview = $('#number-preview');
     if (preview) preview.textContent = store.formatDocNumber(ctx.settings());
   }
